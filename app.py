@@ -410,7 +410,11 @@ def extract_entry_ids(soup, html_text):
 
 @app.route('/api/auto-submit', methods=['POST'])
 def auto_submit():
-    """Auto submit - CHUẨN GOOGLE: Checkbox có thể chọn nhiều"""
+    """
+    Auto submit - PHÂN BỔ % CHO TỪNG OPTION:
+    - Multiple Choice: Random theo phân bổ % (tổng = 100%)
+    - Checkbox: Mỗi option độc lập với tỉ lệ riêng (0-100%)
+    """
     data = request.json
     submit_url = data.get('submit_url')
     questions = data.get('questions', [])
@@ -432,42 +436,58 @@ def auto_submit():
                 if not entry_id:
                     continue
                 
-                options = q.get('options', [])
-                accuracy = float(q.get('accuracy_rate', 80))
-                correct = q['correct_answer']
                 question_type = q.get('type', 'multiple_choice')
-                
-                is_correct = random.random() * 100 < accuracy
+                options = q.get('options', [])
+                option_rates = q.get('option_rates', {})
                 
                 if question_type == 'checkbox':
-                    # CHECKBOX: Chọn 1 option (hoặc có thể nhiều)
-                    # Google Form: cùng entry ID, submit 1 hoặc nhiều giá trị
-                    if is_correct:
-                        selected = [correct]
-                    else:
-                        wrong_opts = [o for o in options if o != correct]
-                        selected = [random.choice(wrong_opts)] if wrong_opts else [correct]
+                    # CHECKBOX: Mỗi option độc lập
+                    # Random cho TỪNG checkbox xem có tick không
+                    selected_options = []
                     
-                    # Submit selected option(s)
-                    # For single selection, just submit one value
-                    form_data[entry_id] = selected[0]
-                    debug_answers[q['text']] = selected[0]
+                    for opt in options:
+                        rate = option_rates.get(opt, 50)  # Default 50%
+                        if random.random() * 100 < rate:
+                            selected_options.append(opt)
+                    
+                    # Nếu không chọn gì, chọn random 1 cái
+                    if not selected_options:
+                        selected_options = [random.choice(options)]
+                    
+                    # Google Form checkbox: chọn 1 (hoặc có thể nhiều nếu cần)
+                    # Tạm thời chọn 1 option
+                    form_data[entry_id] = selected_options[0]
+                    debug_answers[q['text']] = selected_options[0]
                 
                 else:
-                    # MULTIPLE CHOICE
-                    if is_correct:
-                        answer = correct
-                    else:
-                        wrong_opts = [o for o in options if o != correct]
-                        answer = random.choice(wrong_opts) if wrong_opts else correct
+                    # MULTIPLE CHOICE: Random theo phân phối %
+                    # Tính cumulative distribution
+                    total = sum(option_rates.values())
                     
-                    form_data[entry_id] = answer
-                    debug_answers[q['text']] = answer
+                    if total == 0:
+                        # Fallback: equal distribution
+                        selected = random.choice(options)
+                    else:
+                        # Weighted random
+                        rand_val = random.random() * total
+                        cumulative = 0
+                        selected = options[0]
+                        
+                        for opt in options:
+                            rate = option_rates.get(opt, 0)
+                            cumulative += rate
+                            if rand_val <= cumulative:
+                                selected = opt
+                                break
+                    
+                    form_data[entry_id] = selected
+                    debug_answers[q['text']] = selected
             
             # Debug
             if i == 0:
                 print(f"\n🔍 DEBUG Submit #{i+1}:")
                 print(f"Form data: {form_data}")
+                print(f"Answers: {debug_answers}")
                 results['debug_info'].append({
                     'submit_url': submit_url,
                     'form_data': form_data,

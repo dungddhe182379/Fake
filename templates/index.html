@@ -250,28 +250,61 @@
                 const div = document.createElement('div');
                 div.className = 'question-item';
                 
-                // Kiểm tra type
-                const isTextInput = q.type === 'text' || !q.options || q.options.length === 0;
+                const isCheckbox = q.type === 'checkbox';
                 
-                let answerInput = '';
-                if (isTextInput) {
-                    // Text input question
-                    answerInput = `
+                let optionsHTML = '';
+                
+                if (isCheckbox) {
+                    // CHECKBOX: Mỗi option có slider độc lập 0-100%
+                    optionsHTML = `
                         <div class="form-group">
-                            <label>Câu trả lời mẫu (sẽ random):</label>
-                            <input type="text" id="correct-${idx}" value="${q.correct_answer || 'Sample answer'}" 
-                                   placeholder="Nhập text mẫu...">
-                            <small style="color: #666;">💡 Mỗi lần submit sẽ thêm số random vào cuối</small>
+                            <label>Tỉ lệ chọn cho từng option (độc lập):</label>
+                            <div style="margin-top: 10px;">
+                                ${q.options.map((opt, optIdx) => `
+                                    <div style="margin-bottom: 15px; padding: 10px; background: #f9f9f9; border-radius: 6px;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                            <strong>${opt}</strong>
+                                            <span class="accuracy-display" id="option-rate-${idx}-${optIdx}" style="color: #667eea; font-size: 16px;">50%</span>
+                                        </div>
+                                        <input type="range" class="accuracy-slider" id="option-slider-${idx}-${optIdx}" 
+                                               min="0" max="100" value="50"
+                                               oninput="document.getElementById('option-rate-${idx}-${optIdx}').textContent = this.value + '%'"
+                                               data-option="${opt}">
+                                    </div>
+                                `).join('')}
+                            </div>
+                            <small style="color: #666;">💡 Mỗi checkbox độc lập, có thể chọn nhiều cùng lúc</small>
                         </div>
                     `;
                 } else {
-                    // Multiple choice question
-                    answerInput = `
+                    // MULTIPLE CHOICE: Phân bổ % cho từng option, tổng = 100%
+                    const perOption = Math.floor(100 / q.options.length);
+                    const remainder = 100 - (perOption * q.options.length);
+                    
+                    optionsHTML = `
                         <div class="form-group">
-                            <label>Đáp án đúng:</label>
-                            <select id="correct-${idx}">
-                                ${q.options.map(opt => `<option value="${opt}" ${opt === q.correct_answer ? 'selected' : ''}>${opt}</option>`).join('')}
-                            </select>
+                            <label>Phân bổ tỉ lệ cho từng option (tổng = 100%):</label>
+                            <div style="margin-top: 10px;">
+                                ${q.options.map((opt, optIdx) => {
+                                    const defaultVal = optIdx === 0 ? perOption + remainder : perOption;
+                                    return `
+                                        <div style="margin-bottom: 15px; padding: 10px; background: #f9f9f9; border-radius: 6px;">
+                                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                                <strong>${opt}</strong>
+                                                <span class="accuracy-display" id="option-rate-${idx}-${optIdx}" style="color: #667eea; font-size: 16px;">${defaultVal}%</span>
+                                            </div>
+                                            <input type="range" class="accuracy-slider" id="option-slider-${idx}-${optIdx}" 
+                                                   min="0" max="100" value="${defaultVal}"
+                                                   oninput="updateMultipleChoiceRates(${idx}, ${q.options.length})"
+                                                   data-option="${opt}">
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                            <div style="margin-top: 10px; padding: 10px; background: #e3f2fd; border-radius: 6px; text-align: center;">
+                                <strong>Tổng: <span id="total-rate-${idx}" style="color: #1976d2; font-size: 18px;">100%</span></strong>
+                            </div>
+                            <small style="color: #666;">💡 Điều chỉnh % để tổng = 100%</small>
                         </div>
                     `;
                 }
@@ -279,31 +312,58 @@
                 div.innerHTML = `
                     <div class="question-header">
                         <strong>Câu ${idx + 1}: ${q.text}</strong>
-                        <span style="font-size: 12px; color: #666;">[${isTextInput ? 'TEXT' : 'MULTIPLE CHOICE'}]</span>
+                        <span style="font-size: 12px; color: #666;">[${isCheckbox ? 'CHECKBOX' : 'MULTIPLE CHOICE'}]</span>
                     </div>
-                    ${answerInput}
-                    <div class="form-group">
-                        <label>
-                            Tỉ lệ đúng: 
-                            <span class="accuracy-display" id="accuracy-display-${idx}">${q.accuracy_rate}%</span>
-                        </label>
-                        <input type="range" class="accuracy-slider" id="accuracy-${idx}" 
-                               min="0" max="100" value="${q.accuracy_rate}"
-                               oninput="document.getElementById('accuracy-display-${idx}').textContent = this.value + '%'">
-                    </div>
-                    <small style="color: #666;">Entry ID: ${q.entry_id}</small>
+                    ${optionsHTML}
+                    <small style="color: #999; display: block; margin-top: 10px;">Entry ID: ${q.entry_id}</small>
                 `;
                 container.appendChild(div);
             });
 
             document.getElementById('questionsSection').style.display = 'block';
         }
+        
+        function updateMultipleChoiceRates(questionIdx, numOptions) {
+            // Tính tổng % của multiple choice
+            let total = 0;
+            for (let i = 0; i < numOptions; i++) {
+                const slider = document.getElementById(`option-slider-${questionIdx}-${i}`);
+                const value = parseInt(slider.value);
+                total += value;
+                document.getElementById(`option-rate-${questionIdx}-${i}`).textContent = value + '%';
+            }
+            
+            const totalDisplay = document.getElementById(`total-rate-${questionIdx}`);
+            totalDisplay.textContent = total + '%';
+            
+            // Warning nếu không = 100%
+            if (total !== 100) {
+                totalDisplay.style.color = '#f44336';
+            } else {
+                totalDisplay.style.color = '#1976d2';
+            }
+        }
 
         function prepareSubmit() {
-            // Update questions với correct_answer và accuracy_rate mới
+            // Update questions với option rates mới
             questions.forEach((q, idx) => {
-                q.correct_answer = document.getElementById(`correct-${idx}`).value;
-                q.accuracy_rate = parseFloat(document.getElementById(`accuracy-${idx}`).value);
+                if (q.type === 'checkbox') {
+                    // CHECKBOX: Lưu tỉ lệ cho từng option
+                    const optionRates = {};
+                    q.options.forEach((opt, optIdx) => {
+                        const slider = document.getElementById(`option-slider-${idx}-${optIdx}`);
+                        optionRates[opt] = parseFloat(slider.value);
+                    });
+                    q.option_rates = optionRates;
+                } else {
+                    // MULTIPLE CHOICE: Lưu phân bổ %
+                    const optionRates = {};
+                    q.options.forEach((opt, optIdx) => {
+                        const slider = document.getElementById(`option-slider-${idx}-${optIdx}`);
+                        optionRates[opt] = parseFloat(slider.value);
+                    });
+                    q.option_rates = optionRates;
+                }
             });
 
             document.getElementById('submitSection').style.display = 'block';
