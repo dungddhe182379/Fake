@@ -418,75 +418,121 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
     results = {'total': num_responses, 'success': 0, 'failed': 0, 'errors': [], 'status': 'running'}
     background_tasks[task_id] = results
     
+    # PRE-CALCULATE EXACT DISTRIBUTION
+    # Thay vì random, tạo list CHÍNH XÁC theo tỉ lệ
+    response_plans = []
+    
+    # PRE-CALCULATE CHECKBOX SELECTIONS
+    # Tạo list index cho mỗi option của mỗi checkbox question
+    checkbox_selections = {}
+    
+    for q in questions:
+        if q.get('type') == 'checkbox':
+            entry_id = q.get('entry_id')
+            options = q.get('options', [])
+            option_rates = q.get('option_rates', {})
+            
+            checkbox_selections[entry_id] = {}
+            
+            for opt in options:
+                rate = option_rates.get(opt, 50)
+                num_should_select = int(num_responses * rate / 100)
+                
+                # Tạo list indices: [0,1,2,...,num_should_select-1]
+                # Shuffle để random vị trí
+                all_indices = list(range(num_responses))
+                random.shuffle(all_indices)
+                selected_indices = set(all_indices[:num_should_select])
+                
+                checkbox_selections[entry_id][opt] = selected_indices
+    
     for i in range(num_responses):
+        response_plan = {}
+        
+        for q in questions:
+            entry_id = q.get('entry_id')
+            if not entry_id:
+                continue
+            
+            question_type = q.get('type', 'multiple_choice')
+            options = q.get('options', [])
+            option_rates = q.get('option_rates', {})
+            
+            if question_type == 'checkbox':
+                # CHECKBOX: Check pre-calculated selections
+                selected_options = []
+                
+                for opt in options:
+                    if i in checkbox_selections[entry_id][opt]:
+                        selected_options.append(opt)
+                
+                # Nếu không chọn gì (do tất cả đều 0%), chọn random 1
+                if not selected_options:
+                    selected_options = [random.choice(options)]
+                
+                response_plan[entry_id] = {
+                    'type': 'checkbox',
+                    'value': selected_options,
+                    'question_text': q['text']
+                }
+                
+            else:
+                # MULTIPLE CHOICE: Phân bổ CHÍNH XÁC
+                # Ví dụ: 45%, 25%, 5%, 25% cho 100 responses
+                # → 45 responses đầu chọn opt1, 25 tiếp theo chọn opt2, ...
+                
+                # Build cumulative ranges
+                ranges = []
+                cumulative = 0
+                
+                for opt in options:
+                    rate = option_rates.get(opt, 0)
+                    count = int(num_responses * rate / 100)
+                    
+                    if count > 0:
+                        ranges.append({
+                            'option': opt,
+                            'start': cumulative,
+                            'end': cumulative + count
+                        })
+                        cumulative += count
+                
+                # Handle rounding errors - assign remaining to first option
+                if cumulative < num_responses and ranges:
+                    ranges[-1]['end'] += (num_responses - cumulative)
+                
+                # Determine which option this response should use
+                selected = options[0]  # Default
+                for r in ranges:
+                    if r['start'] <= i < r['end']:
+                        selected = r['option']
+                        break
+                
+                response_plan[entry_id] = {
+                    'type': 'multiple_choice',
+                    'value': selected,
+                    'question_text': q['text']
+                }
+        
+        response_plans.append(response_plan)
+    
+    # Shuffle to randomize order (nhưng giữ nguyên tỉ lệ chính xác)
+    random.shuffle(response_plans)
+    
+    # Now submit according to plan
+    for i, plan in enumerate(response_plans):
         try:
             form_data = {}
             debug_answers = {}
             
-            for q in questions:
-                entry_id = q.get('entry_id')
-                if not entry_id:
-                    continue
-                
-                question_type = q.get('type', 'multiple_choice')
-                options = q.get('options', [])
-                option_rates = q.get('option_rates', {})
-                
-                if question_type == 'checkbox':
-                    # CHECKBOX: Mỗi option độc lập, có thể chọn NHIỀU
-                    # Random cho TỪNG checkbox xem có tick không
-                    selected_options = []
-                    
-                    for opt in options:
-                        rate = option_rates.get(opt, 50)  # Default 50%
-                        if random.random() * 100 < rate:
-                            selected_options.append(opt)
-                    
-                    # Nếu không chọn gì, chọn random 1 cái
-                    if not selected_options:
-                        selected_options = [random.choice(options)]
-                    
-                    # Google Form checkbox: SUBMIT NHIỀU GIÁ TRỊ
-                    # Cách 1: Submit as list (requests sẽ encode đúng)
-                    # Cách 2: Submit multiple keys with same name
-                    # Google Form chấp nhận: entry.xxx=value1&entry.xxx=value2
-                    
-                    # Sử dụng cách submit list - requests tự encode
-                    if entry_id in form_data:
-                        # Nếu đã có, append vào list
-                        if isinstance(form_data[entry_id], list):
-                            form_data[entry_id].extend(selected_options)
-                        else:
-                            form_data[entry_id] = [form_data[entry_id]] + selected_options
-                    else:
-                        # Submit tất cả options đã chọn
-                        form_data[entry_id] = selected_options
-                    
-                    debug_answers[q['text']] = ', '.join(selected_options)
-                
+            # Build form_data from pre-calculated plan
+            for entry_id, plan_item in plan.items():
+                if plan_item['type'] == 'checkbox':
+                    form_data[entry_id] = plan_item['value']
+                    debug_answers[plan_item['question_text']] = ', '.join(plan_item['value'])
                 else:
-                    # MULTIPLE CHOICE: Random theo phân phối %
-                    # Tính cumulative distribution
-                    total = sum(option_rates.values())
-                    
-                    if total == 0:
-                        # Fallback: equal distribution
-                        selected = random.choice(options)
-                    else:
-                        # Weighted random
-                        rand_val = random.random() * total
-                        cumulative = 0
-                        selected = options[0]
-                        
-                        for opt in options:
-                            rate = option_rates.get(opt, 0)
-                            cumulative += rate
-                            if rand_val <= cumulative:
-                                selected = opt
-                                break
-                    
-                    form_data[entry_id] = selected
-                    debug_answers[q['text']] = selected
+                    form_data[entry_id] = plan_item['value']
+                    debug_answers[plan_item['question_text']] = plan_item['value']
             
             # Debug first submission
             if i == 0:
