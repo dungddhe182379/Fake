@@ -10,6 +10,8 @@ import re
 import time
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import queue
 
 app = Flask(__name__)
 CORS(app)
@@ -415,7 +417,7 @@ def extract_entry_ids(soup, html_text):
 
 def submit_responses_background(task_id, submit_url, questions, num_responses, delay):
     """Background task để submit responses - không block HTTP response"""
-    results = {'total': num_responses, 'success': 0, 'failed': 0, 'errors': [], 'status': 'running'}
+    results = {'total': num_responses, 'success': 0, 'failed': 0, 'errors': [], 'status': 'running', 'start_time': time.time()}
     background_tasks[task_id] = results
     
     # PRE-CALCULATE EXACT DISTRIBUTION
@@ -630,29 +632,20 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
     # Shuffle to randomize order (nhưng giữ nguyên tỉ lệ chính xác)
     random.shuffle(response_plans)
     
-    # Now submit according to plan
-    for i, plan in enumerate(response_plans):
+    print(f"\n🚀 Starting multi-threaded submission with {num_responses} responses...")
+    
+    # Helper function: Submit single response
+    def submit_single_response(plan_index, plan, submit_url):
+        """Submit 1 response, return (success, error_msg)"""
         try:
             form_data = {}
-            debug_answers = {}
             
             # Build form_data from pre-calculated plan
             for entry_id, plan_item in plan.items():
                 if plan_item['type'] == 'checkbox':
                     form_data[entry_id] = plan_item['value']
-                    debug_answers[plan_item['question_text']] = ', '.join(plan_item['value'])
                 else:
                     form_data[entry_id] = plan_item['value']
-                    debug_answers[plan_item['question_text']] = plan_item['value']
-            
-            # Debug logging
-            if i == 0:
-                print(f"\n🔍 DEBUG Submit #{i+1}:")
-                print(f"Form data: {form_data}")
-                print(f"Answers: {debug_answers}")
-            elif (i + 1) % 5 == 0:
-                # Log mỗi 5 submissions
-                print(f"✅ Progress: {i+1}/{num_responses} ({results['success']} success, {results['failed']} failed)")
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -660,88 +653,89 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                 'Content-Type': 'application/x-www-form-urlencoded'
             }
             
-            # Encode form_data: Convert lists to multiple key-value pairs
-            # Google Form checkbox cần: entry.xxx=val1&entry.xxx=val2&entry.xxx=val3
+            # Encode form_data
             encoded_data = []
             for key, value in form_data.items():
                 if isinstance(value, list):
-                    # Multiple values for same key (checkbox)
                     for v in value:
                         encoded_data.append((key, v))
                 else:
-                    # Single value
                     encoded_data.append((key, value))
             
-            # Submit với retry logic (max 2 retries)
+            # Submit với retry
             max_retries = 2
-            success = False
-            last_error = None
-            
             for attempt in range(max_retries):
                 try:
+                    # Giảm timeout xuống 10s để nhanh hơn
                     resp = requests.post(submit_url, data=encoded_data, headers=headers, 
-                                       allow_redirects=True, timeout=20)
-                    
-                    if i == 0 and attempt == 0:
-                        print(f"Status: {resp.status_code}")
+                                       allow_redirects=True, timeout=10)
                     
                     if resp.status_code == 200:
-                        results['success'] += 1
-                        success = True
-                        break
-                    elif resp.status_code >= 500:
-                        # Server error, retry
-                        last_error = f'HTTP {resp.status_code}'
-                        print(f"⚠️  Submit #{i+1} failed: HTTP {resp.status_code}, retry {attempt + 1}/{max_retries}")
-                        if attempt < max_retries - 1:
-                            time.sleep(1)
-                            continue
-                    else:
-                        # Client error (4xx), don't retry
-                        print(f"❌ Submit #{i+1} failed: HTTP {resp.status_code}")
-                        results['failed'] += 1
-                        results['errors'].append(f'#{i+1}: HTTP {resp.status_code}')
-                        break
-                        
-                except requests.Timeout:
-                    last_error = 'Timeout'
-                    if attempt < max_retries - 1:
-                        time.sleep(1)
+                        return (True, None, plan_index)
+                    elif resp.status_code >= 500 and attempt < max_retries - 1:
+                        time.sleep(0.5)
                         continue
                     else:
-                        results['failed'] += 1
-                        results['errors'].append(f'#{i+1}: Timeout sau {max_retries} lần retry')
-                        break
+                        return (False, f'HTTP {resp.status_code}', plan_index)
+                        
+                except requests.Timeout:
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5)
+                        continue
+                    return (False, 'Timeout', plan_index)
                 except Exception as e:
-                    last_error = str(e)
-                    results['failed'] += 1
-                    results['errors'].append(f'#{i+1}: {str(e)}')
-                    break
+                    return (False, str(e), plan_index)
             
-            # Nếu retry hết mà vẫn fail
-            if not success and last_error and last_error not in str(results['errors']):
+            return (False, 'Unknown error', plan_index)
+            
+        except Exception as e:
+            return (False, str(e), plan_index)
+    
+    # Multi-threaded submission với ThreadPoolExecutor
+    # Số thread = min(20, num_responses) để đạt tốc độ cao
+    # 20 threads → ~100 requests trong 10-15s
+    max_workers = min(20, num_responses)
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit tất cả tasks
+        futures = []
+        for i, plan in enumerate(response_plans):
+            future = executor.submit(submit_single_response, i, plan, submit_url)
+            futures.append(future)
+            
+            # Delay cực nhỏ giữa các lần tạo thread (chỉ để tránh spike)
+            # 100 requests / 20 threads = 5 batches
+            # Mỗi batch delay 0.05s → tổng ~0.25s để khởi tạo
+            if i < num_responses - 1:
+                time.sleep(0.05)
+        
+        # Thu thập kết quả khi hoàn thành
+        completed = 0
+        for future in as_completed(futures):
+            success, error, idx = future.result()
+            
+            if success:
+                results['success'] += 1
+            else:
                 results['failed'] += 1
-                results['errors'].append(f'#{i+1}: {last_error} sau {max_retries} retry')
+                results['errors'].append(f'#{idx+1}: {error}')
             
-            # Update progress in real-time
+            completed += 1
+            
+            # Update progress
             background_tasks[task_id] = results
             
-            if i < num_responses - 1:
-                # Random delay ±20% để tránh bị detect pattern
-                # VD: delay=2 → random 1.6-2.4s
-                random_delay = delay * random.uniform(0.8, 1.2)
-                time.sleep(random_delay)
-                
-        except Exception as e:
-            results['failed'] += 1
-            error_msg = f'#{i+1}: {str(e)}'
-            results['errors'].append(error_msg)
-            print(f"❌ Error: {error_msg}")
+            # Log progress mỗi 10 submissions
+            if completed % 10 == 0 or completed == num_responses:
+                print(f"✅ Progress: {completed}/{num_responses} ({results['success']} success, {results['failed']} failed)")
     
     # Update final status
     results['status'] = 'completed'
+    results['end_time'] = time.time()
+    results['duration'] = round(results['end_time'] - results['start_time'], 2)
     background_tasks[task_id] = results
     print(f"\n📊 Task {task_id}: {results['success']}/{results['total']} successful")
+    print(f"⏱️  Total time: {results['duration']}s ({results['total']/results['duration']:.1f} requests/s)")
 
 @app.route('/api/auto-submit', methods=['POST'])
 def auto_submit():
@@ -825,15 +819,32 @@ def task_status(task_id):
         completed = task['success'] + task['failed']
         progress = round((completed / task['total']) * 100, 1)
     
-    return jsonify({
+    # Calculate elapsed time and speed
+    elapsed_time = 0
+    speed = 0
+    if 'start_time' in task:
+        elapsed_time = round(time.time() - task['start_time'], 1)
+        if elapsed_time > 0:
+            completed = task['success'] + task['failed']
+            speed = round(completed / elapsed_time, 1)
+    
+    response_data = {
         'task_id': task_id,
         'status': task['status'],
         'progress': progress,
         'total': task['total'],
         'success': task['success'],
         'failed': task['failed'],
-        'errors': task['errors'][-5:] if len(task['errors']) > 5 else task['errors']  # Last 5 errors only
-    })
+        'elapsed_time': elapsed_time,
+        'speed': speed,
+        'errors': task['errors'][-5:] if len(task['errors']) > 5 else task['errors']
+    }
+    
+    # Add duration if completed
+    if task['status'] == 'completed' and 'duration' in task:
+        response_data['duration'] = task['duration']
+    
+    return jsonify(response_data)
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
