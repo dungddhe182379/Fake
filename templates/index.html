@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Form Auto Submit</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 40px;
+        }
+        h1 { color: #333; text-align: center; margin-bottom: 10px; }
+        .subtitle { text-align: center; color: #666; margin-bottom: 30px; font-size: 14px; }
+        .section { background: #f8f9fa; padding: 25px; border-radius: 8px; margin-bottom: 25px; }
+        .section-title { font-size: 20px; color: #667eea; margin-bottom: 20px; font-weight: 600; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; color: #333; font-weight: 500; }
+        input[type="text"], input[type="number"], select, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        input:focus, textarea:focus { outline: none; border-color: #667eea; }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .btn-primary { background: #667eea; color: white; }
+        .btn-primary:hover { background: #5568d3; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4); }
+        .btn-success { background: #51cf66; color: white; }
+        .btn-success:hover { background: #40c057; }
+        .btn-danger { background: #ff6b6b; color: white; }
+        .btn-danger:hover { background: #ee5555; }
+        .question-item {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border: 2px solid #e0e0e0;
+        }
+        .question-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .alert {
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        .alert-success {
+            background: #d3f9d8;
+            color: #2b8a3e;
+            border: 1px solid #51cf66;
+        }
+        .alert-error {
+            background: #ffe0e0;
+            color: #c92a2a;
+            border: 1px solid #ff6b6b;
+        }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+            display: none;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .progress-bar {
+            width: 100%;
+            height: 25px;
+            background: #e0e0e0;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #51cf66, #40c057);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 12px;
+            transition: width 0.5s ease;
+        }
+        .accuracy-slider {
+            width: 100%;
+            height: 8px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: #e0e0e0;
+            border-radius: 5px;
+            outline: none;
+        }
+        .accuracy-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #667eea;
+            cursor: pointer;
+            border-radius: 50%;
+        }
+        .accuracy-display {
+            display: inline-block;
+            margin-left: 10px;
+            font-weight: bold;
+            color: #667eea;
+            min-width: 50px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 Google Form Auto Submit</h1>
+        <p class="subtitle">Import form → Tùy chỉnh tỉ lệ cho từng câu → Auto submit</p>
+
+        <div id="alert-container"></div>
+
+        <!-- Section 1: Import Form -->
+        <div class="section">
+            <h2 class="section-title">📝 Bước 1: Import Google Form</h2>
+            
+            <div class="form-group">
+                <label>URL Google Form:</label>
+                <input type="text" id="importUrl" placeholder="https://docs.google.com/forms/d/e/...">
+            </div>
+
+            <button class="btn btn-primary" onclick="importFromUrl()">📥 Import Form</button>
+            
+            <div class="loader" id="loader"></div>
+        </div>
+
+        <!-- Section 2: Questions -->
+        <div class="section" id="questionsSection" style="display: none;">
+            <h2 class="section-title">🎯 Bước 2: Tùy chỉnh tỉ lệ đúng cho từng câu</h2>
+            
+            <div id="questions-container"></div>
+
+            <div style="margin-top: 20px;">
+                <button class="btn btn-success" onclick="prepareSubmit()">✅ Hoàn tất & Chuẩn bị Submit</button>
+            </div>
+        </div>
+
+        <!-- Section 3: Submit -->
+        <div class="section" id="submitSection" style="display: none;">
+            <h2 class="section-title">🚀 Bước 3: Auto Submit</h2>
+            
+            <div class="form-group">
+                <label>Số lượng responses:</label>
+                <input type="number" id="numResponses" value="10" min="1" max="1000">
+            </div>
+
+            <div class="form-group">
+                <label>Delay giữa các lần submit (giây):</label>
+                <input type="number" id="submitDelay" value="1" min="0.5" max="10" step="0.5">
+            </div>
+
+            <button class="btn btn-success" onclick="autoSubmit()">🚀 Bắt đầu Auto Submit</button>
+
+            <div id="submitProgress" style="margin-top: 20px; display: none;">
+                <p id="progressText">Đang submit: 0/0</p>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressBar" style="width: 0%">0%</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let formData = null;
+        let questions = [];
+
+        function showAlert(message, type = 'success') {
+            const container = document.getElementById('alert-container');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            container.appendChild(alert);
+            setTimeout(() => alert.remove(), 5000);
+        }
+
+        async function importFromUrl() {
+            const url = document.getElementById('importUrl').value.trim();
+            if (!url) {
+                showAlert('Vui lòng nhập URL!', 'error');
+                return;
+            }
+
+            document.getElementById('loader').style.display = 'block';
+
+            try {
+                const response = await fetch('/api/import-from-url', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
+
+                const data = await response.json();
+                document.getElementById('loader').style.display = 'none';
+                
+                if (response.ok) {
+                    formData = data;
+                    questions = data.questions;
+                    displayQuestions(questions);
+                    showAlert(`✅ ${data.message}`, 'success');
+                } else {
+                    showAlert(`❌ ${data.error}`, 'error');
+                }
+            } catch (error) {
+                document.getElementById('loader').style.display = 'none';
+                showAlert('❌ Lỗi khi import!', 'error');
+                console.error(error);
+            }
+        }
+
+        function displayQuestions(questions) {
+            const container = document.getElementById('questions-container');
+            container.innerHTML = '';
+
+            questions.forEach((q, idx) => {
+                const div = document.createElement('div');
+                div.className = 'question-item';
+                
+                // Kiểm tra type
+                const isTextInput = q.type === 'text' || !q.options || q.options.length === 0;
+                
+                let answerInput = '';
+                if (isTextInput) {
+                    // Text input question
+                    answerInput = `
+                        <div class="form-group">
+                            <label>Câu trả lời mẫu (sẽ random):</label>
+                            <input type="text" id="correct-${idx}" value="${q.correct_answer || 'Sample answer'}" 
+                                   placeholder="Nhập text mẫu...">
+                            <small style="color: #666;">💡 Mỗi lần submit sẽ thêm số random vào cuối</small>
+                        </div>
+                    `;
+                } else {
+                    // Multiple choice question
+                    answerInput = `
+                        <div class="form-group">
+                            <label>Đáp án đúng:</label>
+                            <select id="correct-${idx}">
+                                ${q.options.map(opt => `<option value="${opt}" ${opt === q.correct_answer ? 'selected' : ''}>${opt}</option>`).join('')}
+                            </select>
+                        </div>
+                    `;
+                }
+                
+                div.innerHTML = `
+                    <div class="question-header">
+                        <strong>Câu ${idx + 1}: ${q.text}</strong>
+                        <span style="font-size: 12px; color: #666;">[${isTextInput ? 'TEXT' : 'MULTIPLE CHOICE'}]</span>
+                    </div>
+                    ${answerInput}
+                    <div class="form-group">
+                        <label>
+                            Tỉ lệ đúng: 
+                            <span class="accuracy-display" id="accuracy-display-${idx}">${q.accuracy_rate}%</span>
+                        </label>
+                        <input type="range" class="accuracy-slider" id="accuracy-${idx}" 
+                               min="0" max="100" value="${q.accuracy_rate}"
+                               oninput="document.getElementById('accuracy-display-${idx}').textContent = this.value + '%'">
+                    </div>
+                    <small style="color: #666;">Entry ID: ${q.entry_id}</small>
+                `;
+                container.appendChild(div);
+            });
+
+            document.getElementById('questionsSection').style.display = 'block';
+        }
+
+        function prepareSubmit() {
+            // Update questions với correct_answer và accuracy_rate mới
+            questions.forEach((q, idx) => {
+                q.correct_answer = document.getElementById(`correct-${idx}`).value;
+                q.accuracy_rate = parseFloat(document.getElementById(`accuracy-${idx}`).value);
+            });
+
+            document.getElementById('submitSection').style.display = 'block';
+            document.getElementById('submitSection').scrollIntoView({ behavior: 'smooth' });
+            showAlert('✅ Đã lưu cấu hình. Bạn có thể auto submit ngay!', 'success');
+        }
+
+        async function autoSubmit() {
+            const numResponses = parseInt(document.getElementById('numResponses').value);
+            const delay = parseFloat(document.getElementById('submitDelay').value);
+
+            if (!formData || !questions || questions.length === 0) {
+                showAlert('Vui lòng import form trước!', 'error');
+                return;
+            }
+
+            const progressDiv = document.getElementById('submitProgress');
+            const progressBar = document.getElementById('progressBar');
+            const progressText = document.getElementById('progressText');
+            
+            progressDiv.style.display = 'block';
+            progressText.textContent = `Đang submit: 0/${numResponses}`;
+            progressBar.style.width = '0%';
+            progressBar.textContent = '0%';
+
+            try {
+                const response = await fetch('/api/auto-submit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        submit_url: formData.submit_url,
+                        questions: questions,
+                        num_responses: numResponses,
+                        delay: delay
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (response.ok) {
+                    progressBar.style.width = '100%';
+                    progressBar.textContent = '100%';
+                    progressText.textContent = `Hoàn thành: ${data.results.success}/${data.results.total}`;
+                    
+                    // Show debug info
+                    if (data.results.debug_info && data.results.debug_info.length > 0) {
+                        console.log('🔍 DEBUG INFO:', data.results.debug_info[0]);
+                        showAlert(`✅ ${data.message}\n🔍 Debug info (xem console F12)`, 'success');
+                    } else {
+                        showAlert(`✅ ${data.message}`, 'success');
+                    }
+                    
+                    if (data.results.failed > 0) {
+                        console.error('❌ Errors:', data.results.errors);
+                        showAlert(`⚠️ Có ${data.results.failed} lỗi. Chi tiết trong console (F12).`, 'error');
+                    }
+                } else {
+                    showAlert(`❌ ${data.error}`, 'error');
+                }
+            } catch (error) {
+                showAlert('❌ Lỗi khi submit!', 'error');
+                console.error(error);
+            }
+        }
+    </script>
+</body>
+</html>
