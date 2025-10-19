@@ -385,11 +385,12 @@
             const progressText = document.getElementById('progressText');
             
             progressDiv.style.display = 'block';
-            progressText.textContent = `Đang submit: 0/${numResponses}`;
+            progressText.textContent = `Đang khởi tạo...`;
             progressBar.style.width = '0%';
             progressBar.textContent = '0%';
 
             try {
+                // BACKGROUND MODE: Submit 1 lần, server xử lý background
                 const response = await fetch('/api/auto-submit', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -403,29 +404,48 @@
 
                 const data = await response.json();
                 
-                if (response.ok) {
-                    progressBar.style.width = '100%';
-                    progressBar.textContent = '100%';
-                    progressText.textContent = `Hoàn thành: ${data.results.success}/${data.results.total}`;
-                    
-                    // Show debug info
-                    if (data.results.debug_info && data.results.debug_info.length > 0) {
-                        console.log('🔍 DEBUG INFO:', data.results.debug_info[0]);
-                        showAlert(`✅ ${data.message}\n🔍 Debug info (xem console F12)`, 'success');
-                    } else {
-                        showAlert(`✅ ${data.message}`, 'success');
-                    }
-                    
-                    if (data.results.failed > 0) {
-                        console.error('❌ Errors:', data.results.errors);
-                        showAlert(`⚠️ Có ${data.results.failed} lỗi. Chi tiết trong console (F12).`, 'error');
-                    }
-                } else {
-                    showAlert(`❌ ${data.error}`, 'error');
+                if (!response.ok) {
+                    showAlert(`❌ Lỗi: ${data.error}`, 'error');
+                    return;
                 }
+
+                const taskId = data.task_id;
+                progressText.textContent = `✅ Đã bắt đầu! Task ID: ${taskId}`;
+                showAlert(data.message, 'success');
+                
+                // Poll status mỗi 2 giây
+                const pollInterval = setInterval(async () => {
+                    try {
+                        const statusResp = await fetch(`/api/task-status/${taskId}`);
+                        const status = await statusResp.json();
+                        
+                        if (statusResp.ok) {
+                            // Update progress bar
+                            progressBar.style.width = status.progress + '%';
+                            progressBar.textContent = Math.round(status.progress) + '%';
+                            progressText.textContent = `Đang submit: ${status.success + status.failed}/${status.total} (${status.success} thành công, ${status.failed} lỗi)`;
+                            
+                            // Check if completed
+                            if (status.status === 'completed') {
+                                clearInterval(pollInterval);
+                                progressText.textContent = `✅ Hoàn thành: ${status.success}/${status.total} thành công!`;
+                                
+                                if (status.failed > 0) {
+                                    console.error('❌ Errors:', status.errors);
+                                    showAlert(`⚠️ Có ${status.failed} lỗi. Chi tiết trong console (F12).`, 'warning');
+                                } else {
+                                    showAlert(`🎉 Đã submit thành công ${status.success}/${status.total} responses!`, 'success');
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Poll error:', error);
+                    }
+                }, 2000); // Poll every 2 seconds
+                
             } catch (error) {
-                showAlert('❌ Lỗi khi submit!', 'error');
-                console.error(error);
+                showAlert(`❌ Lỗi: ${error.message}`, 'error');
+                console.error('Submit error:', error);
             }
         }
     </script>

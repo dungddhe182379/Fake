@@ -8,9 +8,14 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import time
+import threading
+import uuid
 
 app = Flask(__name__)
 CORS(app)
+
+# Track background tasks
+background_tasks = {}
 
 forms = {}
 responses = {}
@@ -408,23 +413,10 @@ def extract_entry_ids(soup, html_text):
     
     return unique
 
-@app.route('/api/auto-submit', methods=['POST'])
-def auto_submit():
-    """
-    Auto submit - PHÂN BỔ % CHO TỪNG OPTION:
-    - Multiple Choice: Random theo phân bổ % (tổng = 100%)
-    - Checkbox: Mỗi option độc lập với tỉ lệ riêng (0-100%)
-    """
-    data = request.json
-    submit_url = data.get('submit_url')
-    questions = data.get('questions', [])
-    num_responses = int(data.get('num_responses', 10))
-    delay = float(data.get('delay', 1))
-    
-    if not submit_url or not questions:
-        return jsonify({'error': 'Thiếu thông tin'}), 400
-    
-    results = {'total': num_responses, 'success': 0, 'failed': 0, 'errors': [], 'debug_info': []}
+def submit_responses_background(task_id, submit_url, questions, num_responses, delay):
+    """Background task để submit responses - không block HTTP response"""
+    results = {'total': num_responses, 'success': 0, 'failed': 0, 'errors': [], 'status': 'running'}
+    background_tasks[task_id] = results
     
     for i in range(num_responses):
         try:
@@ -496,16 +488,11 @@ def auto_submit():
                     form_data[entry_id] = selected
                     debug_answers[q['text']] = selected
             
-            # Debug
+            # Debug first submission
             if i == 0:
                 print(f"\n🔍 DEBUG Submit #{i+1}:")
                 print(f"Form data: {form_data}")
                 print(f"Answers: {debug_answers}")
-                results['debug_info'].append({
-                    'submit_url': submit_url,
-                    'form_data': form_data,
-                    'answers': debug_answers
-                })
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -525,16 +512,57 @@ def auto_submit():
                     # Single value
                     encoded_data.append((key, value))
             
-            resp = requests.post(submit_url, data=encoded_data, headers=headers, allow_redirects=True, timeout=10)
+            # Submit với retry logic (max 2 retries)
+            max_retries = 2
+            success = False
+            last_error = None
             
-            if i == 0:
-                print(f"Status: {resp.status_code}")
+            for attempt in range(max_retries):
+                try:
+                    resp = requests.post(submit_url, data=encoded_data, headers=headers, 
+                                       allow_redirects=True, timeout=15)
+                    
+                    if i == 0 and attempt == 0:
+                        print(f"Status: {resp.status_code}")
+                    
+                    if resp.status_code == 200:
+                        results['success'] += 1
+                        success = True
+                        break
+                    elif resp.status_code >= 500:
+                        # Server error, retry
+                        last_error = f'HTTP {resp.status_code}'
+                        if attempt < max_retries - 1:
+                            time.sleep(1)
+                            continue
+                    else:
+                        # Client error (4xx), don't retry
+                        results['failed'] += 1
+                        results['errors'].append(f'#{i+1}: HTTP {resp.status_code}')
+                        break
+                        
+                except requests.Timeout:
+                    last_error = 'Timeout'
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                        continue
+                    else:
+                        results['failed'] += 1
+                        results['errors'].append(f'#{i+1}: Timeout sau {max_retries} lần retry')
+                        break
+                except Exception as e:
+                    last_error = str(e)
+                    results['failed'] += 1
+                    results['errors'].append(f'#{i+1}: {str(e)}')
+                    break
             
-            if resp.status_code == 200:
-                results['success'] += 1
-            else:
+            # Nếu retry hết mà vẫn fail
+            if not success and last_error and last_error not in str(results['errors']):
                 results['failed'] += 1
-                results['errors'].append(f'#{i+1}: HTTP {resp.status_code}')
+                results['errors'].append(f'#{i+1}: {last_error} sau {max_retries} retry')
+            
+            # Update progress in real-time
+            background_tasks[task_id] = results
             
             if i < num_responses - 1:
                 time.sleep(delay)
@@ -545,8 +573,70 @@ def auto_submit():
             results['errors'].append(error_msg)
             print(f"❌ Error: {error_msg}")
     
-    print(f"\n📊 Results: {results['success']}/{results['total']} successful")
-    return jsonify({'message': f'{results["success"]}/{results["total"]} thành công', 'results': results})
+    # Update final status
+    results['status'] = 'completed'
+    background_tasks[task_id] = results
+    print(f"\n📊 Task {task_id}: {results['success']}/{results['total']} successful")
+
+@app.route('/api/auto-submit', methods=['POST'])
+def auto_submit():
+    """
+    Auto submit - BACKGROUND MODE:
+    - Nhận request → Tạo background task → Return ngay
+    - User có thể tắt browser, backend vẫn chạy tiếp
+    - Dùng /api/task-status/<task_id> để check progress
+    """
+    data = request.json
+    submit_url = data.get('submit_url')
+    questions = data.get('questions', [])
+    num_responses = int(data.get('num_responses', 10))
+    delay = float(data.get('delay', 1))
+    
+    if not submit_url or not questions:
+        return jsonify({'error': 'Thiếu thông tin'}), 400
+    
+    # Generate task ID
+    task_id = str(uuid.uuid4())
+    
+    # Start background thread
+    thread = threading.Thread(
+        target=submit_responses_background,
+        args=(task_id, submit_url, questions, num_responses, delay)
+    )
+    thread.daemon = True  # Thread sẽ tự tắt khi Flask tắt
+    thread.start()
+    
+    print(f"\n🚀 Started background task {task_id} for {num_responses} responses")
+    
+    return jsonify({
+        'task_id': task_id,
+        'message': f'Đã bắt đầu gửi {num_responses} responses ở background. Bạn có thể tắt browser.',
+        'status_url': f'/api/task-status/{task_id}'
+    })
+
+@app.route('/api/task-status/<task_id>', methods=['GET'])
+def task_status(task_id):
+    """Check status của background task"""
+    if task_id not in background_tasks:
+        return jsonify({'error': 'Task không tồn tại'}), 404
+    
+    task = background_tasks[task_id]
+    
+    # Calculate progress percentage
+    progress = 0
+    if task['total'] > 0:
+        completed = task['success'] + task['failed']
+        progress = round((completed / task['total']) * 100, 1)
+    
+    return jsonify({
+        'task_id': task_id,
+        'status': task['status'],
+        'progress': progress,
+        'total': task['total'],
+        'success': task['success'],
+        'failed': task['failed'],
+        'errors': task['errors'][-5:] if len(task['errors']) > 5 else task['errors']  # Last 5 errors only
+    })
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
