@@ -441,7 +441,7 @@ def auto_submit():
                 option_rates = q.get('option_rates', {})
                 
                 if question_type == 'checkbox':
-                    # CHECKBOX: Mỗi option độc lập
+                    # CHECKBOX: Mỗi option độc lập, có thể chọn NHIỀU
                     # Random cho TỪNG checkbox xem có tick không
                     selected_options = []
                     
@@ -454,10 +454,23 @@ def auto_submit():
                     if not selected_options:
                         selected_options = [random.choice(options)]
                     
-                    # Google Form checkbox: chọn 1 (hoặc có thể nhiều nếu cần)
-                    # Tạm thời chọn 1 option
-                    form_data[entry_id] = selected_options[0]
-                    debug_answers[q['text']] = selected_options[0]
+                    # Google Form checkbox: SUBMIT NHIỀU GIÁ TRỊ
+                    # Cách 1: Submit as list (requests sẽ encode đúng)
+                    # Cách 2: Submit multiple keys with same name
+                    # Google Form chấp nhận: entry.xxx=value1&entry.xxx=value2
+                    
+                    # Sử dụng cách submit list - requests tự encode
+                    if entry_id in form_data:
+                        # Nếu đã có, append vào list
+                        if isinstance(form_data[entry_id], list):
+                            form_data[entry_id].extend(selected_options)
+                        else:
+                            form_data[entry_id] = [form_data[entry_id]] + selected_options
+                    else:
+                        # Submit tất cả options đã chọn
+                        form_data[entry_id] = selected_options
+                    
+                    debug_answers[q['text']] = ', '.join(selected_options)
                 
                 else:
                     # MULTIPLE CHOICE: Random theo phân phối %
@@ -500,7 +513,19 @@ def auto_submit():
                 'Content-Type': 'application/x-www-form-urlencoded'
             }
             
-            resp = requests.post(submit_url, data=form_data, headers=headers, allow_redirects=True, timeout=10)
+            # Encode form_data: Convert lists to multiple key-value pairs
+            # Google Form checkbox cần: entry.xxx=val1&entry.xxx=val2&entry.xxx=val3
+            encoded_data = []
+            for key, value in form_data.items():
+                if isinstance(value, list):
+                    # Multiple values for same key (checkbox)
+                    for v in value:
+                        encoded_data.append((key, v))
+                else:
+                    # Single value
+                    encoded_data.append((key, value))
+            
+            resp = requests.post(submit_url, data=encoded_data, headers=headers, allow_redirects=True, timeout=10)
             
             if i == 0:
                 print(f"Status: {resp.status_code}")
