@@ -432,19 +432,131 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
             options = q.get('options', [])
             option_rates = q.get('option_rates', {})
             
+            # ✅ ĐẢM BẢO: Tổng tỉ lệ >= 100% đã được validate ở endpoint
+            # Bây giờ phân phối để MỌI response có ít nhất 1 checkbox
+            
             checkbox_selections[entry_id] = {}
             
+            print(f"\n📊 Checkbox: {q.get('text', '')}")
+            print(f"   Options: {len(options)}, Responses: {num_responses}")
+            
+            # BƯỚC 1: Khởi tạo selections (mỗi option là 1 set rỗng)
             for opt in options:
-                rate = option_rates.get(opt, 50)
-                num_should_select = int(num_responses * rate / 100)
+                checkbox_selections[entry_id][opt] = set()
+            
+            # BƯỚC 2: ĐẢM BẢO mỗi response có ít nhất 1 option
+            # Strategy: Phân bổ base để cover 100% responses trước
+            
+            # Tính target count cho mỗi option
+            option_targets = {}
+            total_rate = 0
+            for opt in options:
+                rate = option_rates.get(opt, 0)
+                total_rate += rate
+                # Sử dụng round() thay vì int() để chính xác hơn
+                # VD: 10 * 1% = 0.1 → round = 0, nhưng 100 * 1% = 1.0 → round = 1
+                option_targets[opt] = round(num_responses * rate / 100)
+            
+            # Nếu tổng rate >= 100%, dùng phương pháp phân bổ đều trước
+            if total_rate >= 100:
+                # Phase 2a: Base assignment - đảm bảo mọi response có ít nhất 1 option
+                all_response_indices = list(range(num_responses))
+                random.shuffle(all_response_indices)
                 
-                # Tạo list indices: [0,1,2,...,num_should_select-1]
-                # Shuffle để random vị trí
-                all_indices = list(range(num_responses))
-                random.shuffle(all_indices)
-                selected_indices = set(all_indices[:num_should_select])
+                # Normalize rates để tổng = 100% (cho base assignment)
+                normalized_rates = {}
+                for opt in options:
+                    normalized_rates[opt] = (option_rates.get(opt, 0) / total_rate) * 100
                 
-                checkbox_selections[entry_id][opt] = selected_indices
+                # Phân bổ responses theo normalized rate
+                cumulative = 0
+                for opt in options:
+                    rate = normalized_rates[opt]
+                    count = int(num_responses * rate / 100)
+                    
+                    # Assign responses
+                    for idx in all_response_indices[cumulative:min(cumulative + count, num_responses)]:
+                        checkbox_selections[entry_id][opt].add(idx)
+                    
+                    cumulative = min(cumulative + count, num_responses)
+                
+                # Handle rounding: remaining responses
+                if cumulative < num_responses:
+                    best_option = max(options, key=lambda x: option_rates.get(x, 0))
+                    for idx in all_response_indices[cumulative:]:
+                        checkbox_selections[entry_id][best_option].add(idx)
+                
+                print(f"   ✅ Phase 2a: Base assignment (mỗi response có 1 option)")
+                
+                # Phase 2b: Additional assignment - đạt đủ target rate
+                for opt in options:
+                    target_count = option_targets[opt]
+                    current_count = len(checkbox_selections[entry_id][opt])
+                    
+                    if current_count < target_count:
+                        # Cần thêm
+                        needed = target_count - current_count
+                        
+                        # Lấy các response chưa có option này
+                        available = [i for i in range(num_responses) if i not in checkbox_selections[entry_id][opt]]
+                        random.shuffle(available)
+                        
+                        # Thêm vào
+                        for idx in available[:needed]:
+                            checkbox_selections[entry_id][opt].add(idx)
+                
+                print(f"   ✅ Phase 2b: Additional assignment (đạt target rate)")
+                
+            else:
+                # Tổng < 100%: Phải force thêm vào option có rate cao nhất
+                print(f"   ⚠️ Warning: Total rate = {total_rate}% < 100%")
+                
+                # Assign theo rate trước
+                for opt in options:
+                    target_count = option_targets[opt]
+                    all_indices = list(range(num_responses))
+                    random.shuffle(all_indices)
+                    for idx in all_indices[:target_count]:
+                        checkbox_selections[entry_id][opt].add(idx)
+                
+                # Tìm responses không có option nào
+                for idx in range(num_responses):
+                    has_option = False
+                    for opt in options:
+                        if idx in checkbox_selections[entry_id][opt]:
+                            has_option = True
+                            break
+                    
+                    if not has_option:
+                        # Force thêm vào option có rate cao nhất
+                        best_option = max(options, key=lambda x: option_rates.get(x, 0))
+                        checkbox_selections[entry_id][best_option].add(idx)
+            
+            # Print final distribution
+            for opt in options:
+                final_count = len(checkbox_selections[entry_id][opt])
+                print(f"   - '{opt}': {final_count}/{num_responses} ({final_count/num_responses*100:.1f}%)")
+            
+            # BƯỚC 4: VERIFY - Kiểm tra mọi response đều có ít nhất 1 option
+            empty_responses = []
+            for idx in range(num_responses):
+                has_option = False
+                for opt in options:
+                    if idx in checkbox_selections[entry_id][opt]:
+                        has_option = True
+                        break
+                if not has_option:
+                    empty_responses.append(idx)
+            
+            if empty_responses:
+                print(f"   ❌ ERROR: {len(empty_responses)} responses without options: {empty_responses[:5]}")
+                # Force fix: Add to best option
+                best_option = max(options, key=lambda x: option_rates.get(x, 0))
+                for idx in empty_responses:
+                    checkbox_selections[entry_id][best_option].add(idx)
+                print(f"   → Fixed: Added to '{best_option}'")
+            else:
+                print(f"   ✅ Verified: All {num_responses} responses have at least 1 option")
     
     for i in range(num_responses):
         response_plan = {}
@@ -466,9 +578,8 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                     if i in checkbox_selections[entry_id][opt]:
                         selected_options.append(opt)
                 
-                # Nếu không chọn gì (do tất cả đều 0%), chọn random 1
-                if not selected_options:
-                    selected_options = [random.choice(options)]
+                # ✅ Đảm bảo: selected_options LUÔN có ít nhất 1 item
+                # (Đã được xử lý ở pre-calculate phase)
                 
                 response_plan[entry_id] = {
                     'type': 'checkbox',
@@ -534,14 +645,17 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                     form_data[entry_id] = plan_item['value']
                     debug_answers[plan_item['question_text']] = plan_item['value']
             
-            # Debug first submission
+            # Debug logging
             if i == 0:
                 print(f"\n🔍 DEBUG Submit #{i+1}:")
                 print(f"Form data: {form_data}")
                 print(f"Answers: {debug_answers}")
+            elif (i + 1) % 5 == 0:
+                # Log mỗi 5 submissions
+                print(f"✅ Progress: {i+1}/{num_responses} ({results['success']} success, {results['failed']} failed)")
             
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Referer': submit_url.replace('formResponse', 'viewform'),
                 'Content-Type': 'application/x-www-form-urlencoded'
             }
@@ -566,7 +680,7 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
             for attempt in range(max_retries):
                 try:
                     resp = requests.post(submit_url, data=encoded_data, headers=headers, 
-                                       allow_redirects=True, timeout=15)
+                                       allow_redirects=True, timeout=20)
                     
                     if i == 0 and attempt == 0:
                         print(f"Status: {resp.status_code}")
@@ -578,11 +692,13 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                     elif resp.status_code >= 500:
                         # Server error, retry
                         last_error = f'HTTP {resp.status_code}'
+                        print(f"⚠️  Submit #{i+1} failed: HTTP {resp.status_code}, retry {attempt + 1}/{max_retries}")
                         if attempt < max_retries - 1:
                             time.sleep(1)
                             continue
                     else:
                         # Client error (4xx), don't retry
+                        print(f"❌ Submit #{i+1} failed: HTTP {resp.status_code}")
                         results['failed'] += 1
                         results['errors'].append(f'#{i+1}: HTTP {resp.status_code}')
                         break
@@ -611,7 +727,10 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
             background_tasks[task_id] = results
             
             if i < num_responses - 1:
-                time.sleep(delay)
+                # Random delay ±20% để tránh bị detect pattern
+                # VD: delay=2 → random 1.6-2.4s
+                random_delay = delay * random.uniform(0.8, 1.2)
+                time.sleep(random_delay)
                 
         except Exception as e:
             results['failed'] += 1
@@ -640,6 +759,38 @@ def auto_submit():
     
     if not submit_url or not questions:
         return jsonify({'error': 'Thiếu thông tin'}), 400
+    
+    # ✅ VALIDATION: Kiểm tra tỉ lệ trước khi submit
+    validation_errors = []
+    
+    for q in questions:
+        question_type = q.get('type', 'multiple_choice')
+        options = q.get('options', [])
+        option_rates = q.get('option_rates', {})
+        question_text = q.get('text', 'Câu hỏi không có tên')
+        
+        # Tính tổng tỉ lệ
+        total_rate = sum(option_rates.get(opt, 0) for opt in options)
+        
+        if question_type == 'checkbox':
+            # CHECKBOX: Tổng phải >= 100%
+            if total_rate < 100:
+                validation_errors.append(
+                    f"❌ Checkbox '{question_text}': Tổng tỉ lệ = {total_rate}% (phải >= 100%)"
+                )
+        else:
+            # RADIO (Multiple Choice): Tổng phải = 100%
+            if total_rate != 100:
+                validation_errors.append(
+                    f"❌ Radio '{question_text}': Tổng tỉ lệ = {total_rate}% (phải = 100%)"
+                )
+    
+    # Nếu có lỗi validation → Trả về lỗi
+    if validation_errors:
+        return jsonify({
+            'error': 'Tỉ lệ không hợp lệ',
+            'details': validation_errors
+        }), 400
     
     # Generate task ID
     task_id = str(uuid.uuid4())
