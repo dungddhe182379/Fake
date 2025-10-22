@@ -264,17 +264,12 @@ def import_from_url():
             
             # If Edit URL failed, try fetching VIEWFORM instead
             if is_edit:
-                # Use published_id if found, otherwise use form_id
-                viewform_id = published_id if published_id else form_id
-                viewform_url = f"https://docs.google.com/forms/d/e/{viewform_id}/viewform"
+                viewform_url = f"https://docs.google.com/forms/d/e/{form_id}/viewform"
                 print(f"📥 Fetching VIEWFORM: {viewform_url}")
                 try:
                     resp2 = requests.get(viewform_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
                     soup2 = BeautifulSoup(resp2.text, 'html.parser')
-                    questions_data, pub_id_from_viewform = parse_google_form_viewform(soup2, resp2.text)
-                    # Update published_id if found from viewform
-                    if pub_id_from_viewform:
-                        published_id = pub_id_from_viewform
+                    questions_data, published_id = parse_google_form_viewform(soup2, resp2.text)
                 except Exception as e:
                     print(f"❌ VIEWFORM fetch failed: {e}")
             else:
@@ -952,27 +947,8 @@ def parse_google_form_viewform(soup, html_text):
                 if not params_str or not params_str.startswith('%.@.'):
                     continue
                 
-                # Remove %.@. prefix
-                # Format: %.@.[JSON_ARRAY],"extra","data",...]
-                # Need to extract ONLY the first JSON array
-                content = params_str[4:]  # Remove "%.@."
-                
-                # Find matching ] for the opening [
-                bracket_count = 0
-                end_pos = -1
-                for i, char in enumerate(content):
-                    if char == '[':
-                        bracket_count += 1
-                    elif char == ']':
-                        bracket_count -= 1
-                        if bracket_count == 0:
-                            end_pos = i + 1
-                            break
-                
-                if end_pos == -1:
-                    continue
-                
-                json_str = content[:end_pos]
+                # Remove %.@. prefix and parse JSON
+                json_str = params_str[4:]  # Remove "%.@."
                 
                 import json
                 q_data = json.loads(json_str)
@@ -981,15 +957,12 @@ def parse_google_form_viewform(soup, html_text):
                     continue
                 
                 # Same structure as FB_PUBLIC_LOAD_DATA_
-                # q_data = [question_id, "question_text", null, type_code, [[answer_id, [...]]]]
-                question_id = q_data[0] if len(q_data) > 0 else None
                 question_text = q_data[1] if len(q_data) > 1 else None
+                entry_id = q_data[4][0][0] if len(q_data) > 4 and q_data[4] and len(q_data[4][0]) > 0 else None
                 q_type = q_data[3] if len(q_data) > 3 else None
                 
-                if not question_text or not question_id:
+                if not question_text or not entry_id:
                     continue
-                
-                entry_id = f'entry.{question_id}'
                 
                 if not str(entry_id).startswith('entry.'):
                     entry_id = f'entry.{entry_id}'
