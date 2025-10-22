@@ -366,6 +366,15 @@ def parse_google_form_edit(soup, html_text):
                         print(f"   Text: {question_text[:80]}...")
                         print(f"   Type Code: {q_type}")
                         
+                        # 🔍 DEBUG: Print raw q_data structure
+                        print(f"   🔍 DEBUG - q_data structure:")
+                        print(f"      Length: {len(q_data)}")
+                        for i in range(min(6, len(q_data))):
+                            data_str = str(q_data[i])
+                            if len(data_str) > 150:
+                                data_str = data_str[:150] + "..."
+                            print(f"      q_data[{i}]: {data_str}")
+                        
                         # Determine question type based on Google's type code
                         question_type = None
                         options = []
@@ -406,6 +415,49 @@ def parse_google_form_edit(soup, html_text):
                             question_type = 'long_answer'
                             print(f"   Type: Long Answer")
                         
+                        elif q_type == 5:  # Linear Scale / Rating - CORRECT TYPE CODE!
+                            question_type = 'linear_scale'
+                            # Linear scale structure: q_data[4][0][1] = [['1'], ['2'], ['3'], ['4'], ['5']]
+                            # Each option is a nested array with the value as string
+                            
+                            if len(q_data) > 4 and q_data[4] and len(q_data[4][0]) > 1:
+                                scale_options = q_data[4][0][1]
+                                print(f"   🔍 DEBUG scale_options: {scale_options}")
+                                
+                                if isinstance(scale_options, list) and len(scale_options) > 0:
+                                    # Extract values from nested arrays: [['1'], ['2'], ...] -> ['1', '2', ...]
+                                    for opt in scale_options:
+                                        if isinstance(opt, list) and len(opt) > 0:
+                                            options.append(str(opt[0]))
+                                    
+                                    # Detect min/max from options
+                                    min_val = int(options[0]) if options else 1
+                                    max_val = int(options[-1]) if options else 5
+                                    
+                                    # Check for icon type or labels in q_data[4][0][3]
+                                    icon_type = 'number'  # default
+                                    labels = ['', '']
+                                    if len(q_data[4][0]) > 3 and q_data[4][0][3]:
+                                        labels_data = q_data[4][0][3]
+                                        print(f"   🔍 DEBUG labels_data: {labels_data}")
+                                        if isinstance(labels_data, list) and len(labels_data) >= 2:
+                                            labels = labels_data
+                                            # If has custom labels, likely not a rating (just number scale)
+                                            # Rating icons would be in different field - need more samples
+                                    
+                                    # Check for icon in q_data[4][0][2] (the "0" field we saw)
+                                    if len(q_data[4][0]) > 2 and q_data[4][0][2]:
+                                        icon_code = q_data[4][0][2]
+                                        print(f"   🔍 DEBUG icon_code field: {icon_code}")
+                                        # This might indicate icon type (needs verification)
+                                    
+                                    print(f"   Type: Linear Scale ({min_val}-{max_val}) [Icon: {icon_type}, Labels: {labels}]")
+                                    print(f"   Options: {options}")
+                                else:
+                                    print(f"   ⚠️ Invalid scale_options structure: {scale_options}")
+                            else:
+                                print(f"   ⚠️ Cannot access scale data in q_data[4]")
+                        
                         else:
                             print(f"   ⚠️ Unknown type code: {q_type}, skipping")
                             continue
@@ -419,6 +471,40 @@ def parse_google_form_edit(soup, html_text):
                         
                         if options:
                             question['options'] = options
+                        
+                        # For linear_scale, store metadata
+                        if question_type == 'linear_scale' and options:
+                            # Extract min/max from parsed options
+                            try:
+                                min_val = int(options[0])
+                                max_val = int(options[-1])
+                                question['scale_min'] = min_val
+                                question['scale_max'] = max_val
+                            except (ValueError, IndexError):
+                                question['scale_min'] = 1
+                                question['scale_max'] = 5
+                            
+                            # Icon type detection - need to check different fields
+                            icon_type = 'number'  # default
+                            
+                            # Check q_data[4][0][2] for icon code
+                            if len(q_data[4][0]) > 2 and q_data[4][0][2]:
+                                icon_code = q_data[4][0][2]
+                                # Map icon codes (needs verification with actual rating forms)
+                                if icon_code == 1:
+                                    icon_type = 'star'
+                                elif icon_code == 2:
+                                    icon_type = 'heart'
+                                elif icon_code == 3:
+                                    icon_type = 'thumb'
+                            
+                            # Check for labels in q_data[4][0][3]
+                            if len(q_data[4][0]) > 3 and q_data[4][0][3]:
+                                labels_data = q_data[4][0][3]
+                                if isinstance(labels_data, list) and len(labels_data) >= 2:
+                                    question['scale_labels'] = labels_data  # [min_label, max_label]
+                            
+                            question['icon_type'] = icon_type
                         
                         questions.append(question)
                         print(f"   ✅ Added successfully")
@@ -968,6 +1054,40 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                 response_plan[entry_id] = {
                     'type': 'text',
                     'value': text_answer,
+                    'question_text': q.get('question', q.get('text', ''))
+                }
+                
+            elif question_type == 'linear_scale':
+                # LINEAR SCALE / RATING: Tương tự multiple choice (chọn 1 giá trị)
+                ranges = []
+                cumulative = 0
+                
+                for opt in options:
+                    rate = option_rates.get(opt, 0)
+                    count = int(num_responses * rate / 100)
+                    
+                    if count > 0:
+                        ranges.append({
+                            'option': opt,
+                            'start': cumulative,
+                            'end': cumulative + count
+                        })
+                        cumulative += count
+                
+                # Handle rounding errors
+                if cumulative < num_responses and ranges:
+                    ranges[-1]['end'] += (num_responses - cumulative)
+                
+                # Determine which option this response should use
+                selected = options[0] if options else '1'  # Default
+                for r in ranges:
+                    if r['start'] <= i < r['end']:
+                        selected = r['option']
+                        break
+                
+                response_plan[entry_id] = {
+                    'type': 'linear_scale',
+                    'value': selected,
                     'question_text': q.get('question', q.get('text', ''))
                 }
                 

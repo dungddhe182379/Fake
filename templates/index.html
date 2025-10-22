@@ -253,10 +253,86 @@
                 
                 const isCheckbox = q.type === 'checkbox';
                 const isText = q.type === 'short_answer' || q.type === 'long_answer';
+                const isLinearScale = q.type === 'linear_scale';
                 
                 let optionsHTML = '';
                 
-                if (isText) {
+                if (isLinearScale) {
+                    // LINEAR SCALE / RATING: 2 modes
+                    const iconType = q.icon_type || 'number';
+                    const iconDisplay = iconType === 'star' ? '⭐' : iconType === 'heart' ? '❤️' : iconType === 'thumb' ? '👍' : '🔢';
+                    
+                    optionsHTML = `
+                        <div class="form-group">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+                                <span style="font-size: 24px;">${iconDisplay}</span>
+                                <label style="margin: 0; font-weight: 600;">Linear Scale (${q.scale_min}-${q.scale_max})</label>
+                            </div>
+                            
+                            <!-- Mode Toggle -->
+                            <div style="margin-bottom: 20px; padding: 15px; background: #f0f7ff; border-radius: 8px; border: 2px solid #4285f4;">
+                                <label style="display: block; margin-bottom: 10px; font-weight: 600;">Chọn phương thức:</label>
+                                <div style="display: flex; gap: 15px;">
+                                    <label style="display: flex; align-items: center; cursor: pointer;">
+                                        <input type="radio" name="scale-mode-${idx}" value="average" checked
+                                               onchange="toggleScaleMode(${idx}, 'average')"
+                                               style="margin-right: 8px;">
+                                        <span>📊 Target Average (Trung bình mục tiêu)</span>
+                                    </label>
+                                    <label style="display: flex; align-items: center; cursor: pointer;">
+                                        <input type="radio" name="scale-mode-${idx}" value="manual"
+                                               onchange="toggleScaleMode(${idx}, 'manual')"
+                                               style="margin-right: 8px;">
+                                        <span>🎯 Manual % (Tự chỉnh từng %)</span>
+                                    </label>
+                                </div>
+                            </div>
+                            
+                            <!-- Mode 1: Target Average -->
+                            <div id="average-mode-${idx}" style="display: block;">
+                                <div style="padding: 15px; background: #fff; border: 2px solid #e0e0e0; border-radius: 8px;">
+                                    <label style="display: block; margin-bottom: 10px;">Trung bình mong muốn:</label>
+                                    <input type="number" id="target-average-${idx}" 
+                                           min="${q.scale_min}" max="${q.scale_max}" step="0.1" 
+                                           value="${(q.scale_min + q.scale_max) / 2}"
+                                           style="width: 150px; padding: 8px; font-size: 16px; border: 2px solid #4285f4; border-radius: 6px;"
+                                           oninput="calculateAverageDistribution(${idx})">
+                                    <small style="display: block; margin-top: 8px; color: #666;">
+                                        💡 VD: Nhập 3.5 → Máy tự tính phân bổ để average = 3.5
+                                    </small>
+                                    <div id="average-preview-${idx}" style="margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 6px; font-size: 13px;">
+                                        <!-- Will show calculated distribution -->
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Mode 2: Manual Percentage -->
+                            <div id="manual-mode-${idx}" style="display: none;">
+                                <div style="padding: 15px; background: #fff; border: 2px solid #e0e0e0; border-radius: 8px;">
+                                    <label style="display: block; margin-bottom: 10px;">Phân bổ % cho từng mức (tổng = 100%):</label>
+                                    ${q.options.map((opt, optIdx) => {
+                                        const rate = Math.floor(100 / q.options.length);
+                                        return `
+                                            <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 10px;">
+                                                <span style="min-width: 40px; font-weight: 600; font-size: 16px;">${opt}</span>
+                                                <input type="range" class="option-slider" id="scale-slider-${idx}-${optIdx}"
+                                                       min="0" max="100" value="${rate}"
+                                                       data-option="${opt}"
+                                                       oninput="updateScaleRates(${idx}, ${q.options.length})"
+                                                       style="flex: 1;">
+                                                <span id="scale-rate-${idx}-${optIdx}" style="min-width: 50px; text-align: right; font-weight: 600; color: #4285f4;">${rate}%</span>
+                                            </div>
+                                        `;
+                                    }).join('')}
+                                    <div style="margin-top: 15px; padding: 10px; background: #e3f2fd; border-radius: 6px; text-align: center;">
+                                        <strong>Tổng: <span id="scale-total-${idx}" style="font-size: 18px; color: #1976d2;">100%</span></strong>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    
+                } else if (isText) {
                     // TEXT INPUT: Textarea để nhập danh sách câu trả lời
                     const placeholder = q.type === 'short_answer' 
                         ? 'Nhập mỗi câu trả lời trên 1 dòng.\nVí dụ:\nCâu trả lời 1\nCâu trả lời 2\nCâu trả lời 3\n\n(Dòng trống sẽ bị bỏ qua. Nếu số responses > số dòng, sẽ lặp lại)'
@@ -361,6 +437,111 @@
             }
         }
 
+        // LINEAR SCALE: Toggle between Average mode and Manual mode
+        function toggleScaleMode(questionIdx, mode) {
+            const avgDiv = document.getElementById(`average-mode-${questionIdx}`);
+            const manualDiv = document.getElementById(`manual-mode-${questionIdx}`);
+            
+            if (mode === 'average') {
+                avgDiv.style.display = 'block';
+                manualDiv.style.display = 'none';
+                calculateAverageDistribution(questionIdx);
+            } else {
+                avgDiv.style.display = 'none';
+                manualDiv.style.display = 'block';
+            }
+        }
+        
+        // LINEAR SCALE MODE 1: Calculate distribution to match target average
+        function calculateAverageDistribution(questionIdx) {
+            const targetAvg = parseFloat(document.getElementById(`target-average-${questionIdx}`).value);
+            const q = questions[questionIdx];
+            const min = q.scale_min;
+            const max = q.scale_max;
+            const options = q.options.map(opt => parseInt(opt));
+            
+            if (isNaN(targetAvg) || targetAvg < min || targetAvg > max) {
+                document.getElementById(`average-preview-${questionIdx}`).innerHTML = 
+                    `<span style="color: #f44336;">⚠️ Target average phải nằm trong [${min}, ${max}]</span>`;
+                return;
+            }
+            
+            // Simple algorithm: Distribute based on distance from target
+            // Focus responses around the target average
+            const distribution = {};
+            const n = options.length;
+            
+            // Calculate weights inversely proportional to distance from target
+            let totalWeight = 0;
+            options.forEach(opt => {
+                const distance = Math.abs(opt - targetAvg);
+                // Use exponential decay: closer values get exponentially higher weight
+                const weight = Math.exp(-distance * 1.5);
+                distribution[opt] = weight;
+                totalWeight += weight;
+            });
+            
+            // Normalize to percentages
+            let percentages = {};
+            let actualAverage = 0;
+            options.forEach(opt => {
+                const percentage = (distribution[opt] / totalWeight) * 100;
+                percentages[opt] = Math.round(percentage);
+                actualAverage += opt * (percentage / 100);
+            });
+            
+            // Adjust to ensure total = 100%
+            let total = Object.values(percentages).reduce((a, b) => a + b, 0);
+            if (total !== 100) {
+                const diff = 100 - total;
+                // Find closest option to target and adjust it
+                const closest = options.reduce((prev, curr) => 
+                    Math.abs(curr - targetAvg) < Math.abs(prev - targetAvg) ? curr : prev
+                );
+                percentages[closest] += diff;
+            }
+            
+            // Display preview
+            const previewHTML = `
+                <div style="font-weight: 600; color: #1976d2; margin-bottom: 8px;">
+                    📊 Phân bổ tự động (Target: ${targetAvg.toFixed(1)}, Actual: ${actualAverage.toFixed(2)}):
+                </div>
+                ${options.map(opt => 
+                    `<div style="padding: 4px 0;"><strong>${opt}:</strong> ${percentages[opt]}%</div>`
+                ).join('')}
+            `;
+            document.getElementById(`average-preview-${questionIdx}`).innerHTML = previewHTML;
+            
+            // Store in question data
+            const optionRates = {};
+            options.forEach(opt => {
+                optionRates[opt.toString()] = percentages[opt];
+            });
+            questions[questionIdx].option_rates = optionRates;
+            questions[questionIdx].scale_mode = 'average';
+            questions[questionIdx].target_average = targetAvg;
+        }
+        
+        // LINEAR SCALE MODE 2: Manual percentage sliders
+        function updateScaleRates(questionIdx, numOptions) {
+            let total = 0;
+            for (let i = 0; i < numOptions; i++) {
+                const slider = document.getElementById(`scale-slider-${questionIdx}-${i}`);
+                const value = parseInt(slider.value);
+                total += value;
+                document.getElementById(`scale-rate-${questionIdx}-${i}`).textContent = value + '%';
+            }
+            
+            const totalDisplay = document.getElementById(`scale-total-${questionIdx}`);
+            totalDisplay.textContent = total + '%';
+            
+            if (total !== 100) {
+                totalDisplay.style.color = '#f44336';
+            } else {
+                totalDisplay.style.color = '#1976d2';
+            }
+        }
+
         function prepareSubmit() {
             // Update questions với option rates mới
             questions.forEach((q, idx) => {
@@ -372,6 +553,25 @@
                         q.text_answers = lines;  // Bao gồm cả dòng trống, backend sẽ lọc
                     } else {
                         q.text_answers = [];
+                    }
+                } else if (q.type === 'linear_scale') {
+                    // LINEAR SCALE: Check which mode is active
+                    const avgMode = document.querySelector(`input[name="scale-mode-${idx}"][value="average"]`).checked;
+                    
+                    if (avgMode) {
+                        // Mode 1: Average mode - already saved in calculateAverageDistribution
+                        // Data already in q.option_rates, q.scale_mode, q.target_average
+                    } else {
+                        // Mode 2: Manual mode - collect slider values
+                        const optionRates = {};
+                        q.options.forEach((opt, optIdx) => {
+                            const slider = document.getElementById(`scale-slider-${idx}-${optIdx}`);
+                            if (slider) {
+                                optionRates[opt] = parseFloat(slider.value);
+                            }
+                        });
+                        q.option_rates = optionRates;
+                        q.scale_mode = 'manual';
                     }
                 } else if (q.type === 'checkbox') {
                     // CHECKBOX: Lưu tỉ lệ cho từng option
