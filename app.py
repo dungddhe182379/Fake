@@ -115,8 +115,9 @@ def export_excel():
         for answer in resp['answers']:
             q = next((q for q in forms[form_id]['questions'] if q['id'] == answer['question_id']), None)
             if q:
-                row[q['text']] = answer['answer']
-                row[f"{q['text']} (✓/✗)"] = '✓' if answer['is_correct'] else '✗'
+                q_text = q.get('question', q.get('text', ''))
+                row[q_text] = answer['answer']
+                row[f"{q_text} (✓/✗)"] = '✓' if answer['is_correct'] else '✗'
         rows.append(row)
     
     df = pd.DataFrame(rows)
@@ -148,7 +149,7 @@ def import_json():
 
 @app.route('/api/import-from-url', methods=['POST'])
 def import_from_url():
-    """Import câu hỏi từ Google Form URL"""
+    """Import câu hỏi từ Google Form URL - Support cả viewform và edit"""
     print("\n" + "="*60)
     print("🌐 IMPORT FROM URL REQUEST RECEIVED")
     print("="*60)
@@ -161,33 +162,96 @@ def import_from_url():
             print("❌ No URL provided")
             return jsonify({'error': 'Cung cấp URL'}), 400
         
+        # Convert viewform URL to edit URL if needed
+        if '/viewform' in url:
+            # Convert: /viewform?usp=... → /edit
+            url = url.split('/viewform')[0] + '/edit'
+            print(f"✅ Converted to edit URL: {url}")
+        
         form_id = extract_form_id(url)
-        print(f"Form ID: {form_id}")
+        print(f"Form ID (from URL): {form_id}")
         
         if not form_id:
             print("❌ Invalid URL format")
-            return jsonify({'error': 'URL không hợp lệ'}), 400
+            return jsonify({'error': 'URL không hợp lệ. Vui lòng dùng URL edit hoặc viewform'}), 400
         
         print("📥 Fetching form HTML...")
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
         resp.raise_for_status()
         print(f"✅ HTML fetched: {len(resp.text)} chars")
         
+        # Check if form accepts responses
+        if 'không còn chấp nhận phản hồi' in resp.text.lower() or 'no longer accepting' in resp.text.lower():
+            print("⚠️ WARNING: Form may not be accepting responses")
+            return jsonify({'error': 'Form không còn chấp nhận responses. Vui lòng kiểm tra form settings.'}), 400
+        
         print("🔍 Parsing HTML with BeautifulSoup...")
         soup = BeautifulSoup(resp.text, 'html.parser')
         print("✅ BeautifulSoup created")
         
-        # Parse cả câu hỏi và entry IDs cùng lúc
-        print("🔍 Starting parse_google_form_complete()...")
-        questions_data = parse_google_form_complete(soup, resp.text)
+        # Try to find published form ID from edit page
+        # Look for viewform link in edit page
+        published_id = None
+        
+        # Method 1: Search in all script tags
+        for script in soup.find_all('script'):
+            if script.string:
+                # Try multiple patterns
+                patterns = [
+                    r'/forms/d/e/([a-zA-Z0-9_-]+)/viewform',
+                    r'"([a-zA-Z0-9_-]{56})"',  # Published IDs are typically 56 chars
+                    r'formResponse["\']?\s*:\s*["\']([a-zA-Z0-9_-]{50,70})',
+                ]
+                
+                for pattern in patterns:
+                    match = re.search(pattern, script.string)
+                    if match:
+                        potential_id = match.group(1)
+                        # Validate: published IDs start with "1FAIpQLS" or "1"
+                        if len(potential_id) > 40:  # Published IDs are long
+                            published_id = potential_id
+                            print(f"✅ Found published ID (pattern {pattern[:30]}...): {published_id}")
+                            break
+                
+                if published_id:
+                    break
+        
+        # Method 2: Search in meta tags
+        if not published_id:
+            for meta in soup.find_all('meta'):
+                content = meta.get('content', '')
+                if 'viewform' in content or 'formResponse' in content:
+                    match = re.search(r'/forms/d/e/([a-zA-Z0-9_-]+)', content)
+                    if match:
+                        published_id = match.group(1)
+                        print(f"✅ Found published ID in meta tag: {published_id}")
+                        break
+        
+        # Method 3: Search in entire HTML text
+        if not published_id:
+            # Look for the characteristic published ID pattern
+            match = re.search(r'1FAIpQLS[a-zA-Z0-9_-]{48}', resp.text)
+            if match:
+                published_id = match.group(0)
+                print(f"✅ Found published ID in HTML (1FAIpQLS pattern): {published_id}")
+        
+        if not published_id:
+            print("⚠️ Could not find published ID, will use form ID")
+            print("💡 TIP: Paste viewform URL instead of edit URL for better results")
+            published_id = form_id
+        
+        # Parse questions - NEW CLEAN METHOD
+        print("🔍 Starting parse_google_form_edit()...")
+        questions_data = parse_google_form_edit(soup, resp.text)
         print(f"✅ Parse complete: {len(questions_data)} questions")
         
         if not questions_data:
             print("❌ No questions parsed!")
-            return jsonify({'error': 'Không thể parse form. Thử import JSON thủ công.'}), 400
+            return jsonify({'error': 'Không thể parse form. Vui lòng kiểm tra URL.'}), 400
         
-        submit_url = f"https://docs.google.com/forms/d/e/{form_id}/formResponse"
-        print(f"Submit URL: {submit_url}")
+        # Use published ID for submission URL
+        submit_url = f"https://docs.google.com/forms/d/e/{published_id}/formResponse"
+        print(f"📤 Submit URL: {submit_url}")
         
         print("✅ Returning success response")
         return jsonify({
@@ -201,6 +265,193 @@ def import_from_url():
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'Lỗi: {str(e)}'}), 500
+
+def parse_google_form_edit(soup, html_text):
+    """
+    Parse Google Form từ EDIT URL - CLEAN NEW VERSION
+    Edit URL có structure rõ ràng hơn viewform
+    """
+    print("\n" + "="*60)
+    print("🔍 PARSING GOOGLE FORM (EDIT MODE)")
+    print("="*60)
+    
+    questions = []
+    
+    try:
+        # Method 1: Parse từ FB_PUBLIC_LOAD_DATA_ JSON (chứa full form structure)
+        print("\n📊 Method 1: Searching for FB_PUBLIC_LOAD_DATA_...")
+        
+        # Find the script tag containing form data
+        scripts = soup.find_all('script')
+        form_data = None
+        
+        for script in scripts:
+            if script.string and 'FB_PUBLIC_LOAD_DATA_' in script.string:
+                print("✅ Found FB_PUBLIC_LOAD_DATA_ script tag")
+                script_text = script.string
+                
+                # Extract JSON data - format: var FB_PUBLIC_LOAD_DATA_ = [null, [[[...]]], ...];
+                import re
+                match = re.search(r'var FB_PUBLIC_LOAD_DATA_ = (\[.+?\]);', script_text, re.DOTALL)
+                if match:
+                    json_str = match.group(1)
+                    print(f"✅ Extracted JSON string: {len(json_str)} chars")
+                    
+                    try:
+                        import json
+                        form_data = json.loads(json_str)
+                        print("✅ JSON parsed successfully")
+                        
+                        # DEBUG: Print structure
+                        print("\n🔍 DEBUG: JSON Structure:")
+                        print(f"   Type: {type(form_data)}")
+                        print(f"   Length: {len(form_data) if isinstance(form_data, list) else 'N/A'}")
+                        if isinstance(form_data, list) and len(form_data) > 1:
+                            print(f"   form_data[1] type: {type(form_data[1])}")
+                            if isinstance(form_data[1], list) and len(form_data[1]) > 1:
+                                print(f"   form_data[1][1] type: {type(form_data[1][1])}")
+                                print(f"   form_data[1][1] length: {len(form_data[1][1]) if isinstance(form_data[1][1], list) else 'N/A'}")
+                                
+                                # Print first question structure
+                                if isinstance(form_data[1][1], list) and len(form_data[1][1]) > 0:
+                                    print(f"\n📋 First item structure:")
+                                    first_item = form_data[1][1][0]
+                                    print(f"   Type: {type(first_item)}")
+                                    if isinstance(first_item, list):
+                                        print(f"   Length: {len(first_item)}")
+                                        for idx, elem in enumerate(first_item[:10]):  # First 10 elements
+                                            print(f"   [{idx}]: {type(elem)} = {str(elem)[:100]}")
+                        
+                        break
+                    except json.JSONDecodeError as e:
+                        print(f"⚠️ JSON decode error: {e}")
+                        continue
+        
+        if form_data and isinstance(form_data, list) and len(form_data) > 1:
+            print("\n✅ Form data loaded from JSON")
+            
+            # Structure: form_data[1][1] contains array of questions
+            # Each question: [entry_id, question_text, description, type, required, options...]
+            try:
+                questions_array = form_data[1][1]
+                print(f"📋 Found {len(questions_array)} items in questions array")
+                
+                for idx, q_data in enumerate(questions_array):
+                    if not isinstance(q_data, list) or len(q_data) < 4:
+                        print(f"\n⚠️ Item {idx}: Too short (len={len(q_data) if isinstance(q_data, list) else 'N/A'}), skipping")
+                        continue
+                    
+                    try:
+                        print(f"\n📝 Parsing item {idx}:")
+                        print(f"   Length: {len(q_data)}")
+                        
+                        # Parse question structure
+                        entry_id = str(q_data[4][0][0]) if len(q_data) > 4 and q_data[4] else None
+                        question_text = q_data[1] if len(q_data) > 1 else None
+                        q_type = q_data[3] if len(q_data) > 3 else None
+                        
+                        print(f"   q_data[1] (text?): {str(q_data[1])[:80]}")
+                        print(f"   q_data[3] (type?): {q_data[3]}")
+                        print(f"   q_data[4] exists?: {len(q_data) > 4 and q_data[4] is not None}")
+                        
+                        if not entry_id or not question_text:
+                            print(f"   ⚠️ Missing entry_id or question_text, skipping")
+                            continue
+                        
+                        # Ensure entry_id format
+                        if not entry_id.startswith('entry.'):
+                            entry_id = f'entry.{entry_id}'
+                        
+                        print(f"   Entry ID: {entry_id}")
+                        print(f"   Text: {question_text[:80]}...")
+                        print(f"   Type Code: {q_type}")
+                        
+                        # Determine question type based on Google's type code
+                        question_type = None
+                        options = []
+                        
+                        if q_type == 2:  # Multiple choice (Radio)
+                            question_type = 'multiple_choice'
+                            # Options in q_data[4][0][1]
+                            if len(q_data) > 4 and q_data[4] and len(q_data[4][0]) > 1:
+                                options_data = q_data[4][0][1]
+                                for opt in options_data:
+                                    if isinstance(opt, list) and len(opt) > 0:
+                                        option_text = opt[0]
+                                        # Filter out empty strings
+                                        if option_text and option_text.strip():
+                                            options.append(option_text.strip())
+                            print(f"   Type: Multiple Choice")
+                            print(f"   Options: {options}")
+                        
+                        elif q_type == 4:  # Checkbox
+                            question_type = 'checkbox'
+                            # Options in q_data[4][0][1]
+                            if len(q_data) > 4 and q_data[4] and len(q_data[4][0]) > 1:
+                                options_data = q_data[4][0][1]
+                                for opt in options_data:
+                                    if isinstance(opt, list) and len(opt) > 0:
+                                        option_text = opt[0]
+                                        # Filter out empty strings
+                                        if option_text and option_text.strip():
+                                            options.append(option_text.strip())
+                            print(f"   Type: Checkbox")
+                            print(f"   Options: {options}")
+                        
+                        elif q_type == 0:  # Short answer (text input)
+                            question_type = 'short_answer'
+                            print(f"   Type: Short Answer")
+                        
+                        elif q_type == 1:  # Paragraph (textarea)
+                            question_type = 'long_answer'
+                            print(f"   Type: Long Answer")
+                        
+                        else:
+                            print(f"   ⚠️ Unknown type code: {q_type}, skipping")
+                            continue
+                        
+                        # Build question object
+                        question = {
+                            'question': question_text,
+                            'type': question_type,
+                            'entry_id': entry_id
+                        }
+                        
+                        if options:
+                            question['options'] = options
+                        
+                        questions.append(question)
+                        print(f"   ✅ Added successfully")
+                    
+                    except Exception as e:
+                        print(f"   ❌ Error parsing question {idx}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
+            
+            except Exception as e:
+                print(f"❌ Error accessing questions array: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        else:
+            print("⚠️ Method 1 failed, trying Method 2...")
+            
+            # Method 2: Fallback to HTML parsing (same as old method)
+            print("\n📊 Method 2: HTML role-based parsing...")
+            questions = parse_google_form_complete(soup, html_text)
+    
+    except Exception as e:
+        print(f"❌ Parse error: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    print("\n" + "="*60)
+    print(f"✅ PARSE COMPLETE: {len(questions)} questions extracted")
+    print("="*60)
+    
+    return questions
+
 
 def parse_google_form_complete(soup, html_text):
     """
@@ -217,18 +468,40 @@ def parse_google_form_complete(soup, html_text):
     try:
         # Extract entry IDs
         print("\n🔍 Extracting entry IDs...")
+        
+        # Method 1: Tìm trong HTML text (regex)
         entry_pattern = r'entry\.(\d{9,10})'
         entry_matches = re.findall(entry_pattern, html_text)
         
         seen = set()
-        entry_ids = []
+        entry_ids_from_regex = []
         for match in entry_matches:
             entry_id = f'entry.{match}'
             if entry_id not in seen:
                 seen.add(entry_id)
-                entry_ids.append(entry_id)
+                entry_ids_from_regex.append(entry_id)
         
-        print(f"✅ Found {len(entry_ids)} entry IDs")
+        print(f"   Method 1 (Regex): Found {len(entry_ids_from_regex)} entry IDs")
+        
+        # Method 2: Tìm trong HTML tags (input, textarea)
+        entry_ids_from_tags = []
+        for tag in soup.find_all(['input', 'textarea']):
+            name = tag.get('name', '')
+            if name.startswith('entry.') and name not in seen:
+                seen.add(name)
+                entry_ids_from_tags.append(name)
+        
+        print(f"   Method 2 (HTML tags): Found {len(entry_ids_from_tags)} additional entry IDs")
+        
+        # Combine both methods
+        entry_ids = entry_ids_from_regex + entry_ids_from_tags
+        
+        print(f"✅ Total unique entry IDs: {len(entry_ids)}")
+        
+        # Debug: Print all entry IDs
+        if len(entry_ids) <= 10:
+            for i, eid in enumerate(entry_ids):
+                print(f"   {i+1}. {eid}")
         
         # Find question containers - CHỈ LẤY CÓ HEADING
         print(f"\n🔍 Finding REAL questions (with heading)...")
@@ -246,21 +519,53 @@ def parse_google_form_complete(soup, html_text):
         # Parse từng câu hỏi
         for idx, container in enumerate(question_containers):
             try:
-                if idx >= len(entry_ids):
-                    break
-                
                 # Get question text
                 heading = container.find('div', {'role': 'heading'})
                 question_text = heading.get_text(strip=True)
-                entry_id = entry_ids[idx]
                 
                 print(f"\n{'─'*60}")
                 print(f"📝 Question #{idx + 1}: {question_text}")
+                
+                # ✅ FIX: Tìm entry ID TỪ CHÍNH CONTAINER NÀY
+                # Thay vì dùng entry_ids[idx] (có thể sai thứ tự)
+                entry_id = None
+                
+                # Method 1: Tìm trong input/textarea tags TRONG container này
+                for tag in container.find_all(['input', 'textarea']):
+                    name = tag.get('name', '')
+                    if name.startswith('entry.'):
+                        entry_id = name
+                        break
+                
+                # Method 2: Nếu không tìm thấy, tìm trong jsname attribute
+                if not entry_id:
+                    for tag in container.find_all(['div', 'span']):
+                        data_params = tag.get('data-params', '')
+                        if 'entry.' in data_params:
+                            match = re.search(r'entry\.(\d{9,10})', data_params)
+                            if match:
+                                entry_id = f'entry.{match.group(1)}'
+                                break
+                
+                # Method 3: Fallback - search trong text content của container
+                if not entry_id:
+                    container_html = str(container)
+                    match = re.search(r'entry\.(\d{9,10})', container_html)
+                    if match:
+                        entry_id = f'entry.{match.group(1)}'
+                
+                if not entry_id:
+                    print(f"❌ ERROR: Cannot find entry ID for this question!")
+                    print(f"   Skipping...")
+                    continue
+                
                 print(f"Entry ID: {entry_id}")
                 
                 # Detect type
                 radio_buttons = container.find_all('div', {'role': 'radio'})
                 checkboxes = container.find_all('div', {'role': 'checkbox'})
+                text_inputs = container.find_all('input', {'type': 'text'})
+                text_areas = container.find_all('textarea')
                 
                 options = []
                 question_type = None
@@ -331,11 +636,25 @@ def parse_google_form_complete(soup, html_text):
                             else:
                                 print(f"   - {label} (skipped)")
                 
+                elif text_inputs or text_areas:
+                    # TEXT INPUT (Short answer or Long answer)
+                    if text_areas:
+                        question_type = 'long_answer'
+                        print(f"Type: LONG ANSWER (Paragraph)")
+                    else:
+                        question_type = 'short_answer'
+                        print(f"Type: SHORT ANSWER")
+                    
+                    # Text questions không có options, để trống
+                    options = []
+                    print(f"   (Text input field detected)")
+                
                 else:
                     print("⚠️  Unknown type")
                     continue
                 
-                if not options:
+                # Chỉ check options cho multiple choice và checkbox
+                if question_type in ['multiple_choice', 'checkbox'] and not options:
                     print("⚠️  No options found")
                     continue
                 
@@ -345,11 +664,15 @@ def parse_google_form_complete(soup, html_text):
                     'entry_id': entry_id,
                     'type': question_type,
                     'options': options,
-                    'correct_answer': options[0],
-                    'accuracy_rate': 80
+                    'correct_answer': options[0] if options else '',
+                    'accuracy_rate': 80,
+                    'text_answers': []  # Cho text questions
                 })
                 
-                print(f"✅ Added with {len(options)} options!")
+                if options:
+                    print(f"✅ Added with {len(options)} options!")
+                else:
+                    print(f"✅ Added text question!")
                 
             except Exception as e:
                 print(f"❌ Error: {e}")
@@ -362,8 +685,9 @@ def parse_google_form_complete(soup, html_text):
         print(f"{'='*60}\n")
         
         for i, q in enumerate(questions_data):
-            print(f"{i+1}. [{q['type'].upper()}] {q['text'][:40]}...")
-            print(f"   Entry: {q['entry_id']} | Options: {len(q['options'])}")
+            q_text = q.get('question', q.get('text', ''))
+            print(f"{i+1}. [{q['type'].upper()}] {q_text[:40]}...")
+            print(f"   Entry: {q['entry_id']} | Options: {len(q.get('options', []))}")
     
     except Exception as e:
         print(f"\n❌ CRITICAL ERROR: {e}")
@@ -378,11 +702,24 @@ def analyze_form():
     return import_from_url()
 
 def extract_form_id(url):
+    """
+    Extract form ID from Google Forms URL
+    Supports both:
+    - Edit URL: /forms/d/{FORM_ID}/edit
+    - View URL: /forms/d/e/{PUB_ID}/viewform
+    Returns the appropriate ID for formResponse endpoint
+    """
+    # Try to match /forms/d/{ID}/edit (returns ID directly)
+    match = re.search(r'/forms/d/([a-zA-Z0-9_-]+)/', url)
+    if match:
+        return match.group(1)
+    
+    # Try to match /forms/d/e/{PUB_ID} (for published forms)
     match = re.search(r'/forms/d/e/([a-zA-Z0-9_-]+)', url)
     if match:
         return match.group(1)
-    match = re.search(r'/forms/d/([a-zA-Z0-9_-]+)', url)
-    return match.group(1) if match else None
+    
+    return None
 
 def extract_entry_ids(soup, html_text):
     field_mappings = []
@@ -421,12 +758,48 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
     background_tasks[task_id] = results
     
     # PRE-CALCULATE EXACT DISTRIBUTION
-    # Thay vì random, tạo list CHÍNH XÁC theo tỉ lệ
     response_plans = []
     
     # PRE-CALCULATE CHECKBOX SELECTIONS
-    # Tạo list index cho mỗi option của mỗi checkbox question
     checkbox_selections = {}
+    
+    # PRE-CALCULATE TEXT ANSWERS
+    # Phân phối text answers tuần tự, lặp lại nếu cần
+    text_answer_assignments = {}
+    
+    for q in questions:
+        if q.get('type') in ['short_answer', 'long_answer']:
+            entry_id = q.get('entry_id')
+            text_answers = q.get('text_answers', [])
+            
+            # Lọc bỏ dòng trống
+            text_answers = [ans.strip() for ans in text_answers if ans.strip()]
+            
+            if not text_answers:
+                print(f"\n⚠️  Text question '{q.get('text', '')}': No answers provided, will use empty string")
+                text_answers = ['']  # Default empty
+            
+            print(f"\n📝 Text question: {q.get('text', '')}")
+            print(f"   Type: {q.get('type')}")
+            print(f"   Answers provided: {len(text_answers)} lines")
+            print(f"   Responses needed: {num_responses}")
+            
+            # Phân phối tuần tự, lặp lại nếu cần
+            assignments = []
+            for i in range(num_responses):
+                # Sử dụng modulo để lặp lại
+                ans_index = i % len(text_answers)
+                assignments.append(text_answers[ans_index])
+            
+            text_answer_assignments[entry_id] = assignments
+            
+            # Print sample
+            print(f"   Sample assignments:")
+            for i in range(min(5, num_responses)):
+                print(f"     Response #{i+1}: '{assignments[i][:50]}{'...' if len(assignments[i]) > 50 else ''}'")
+            
+            if num_responses > len(text_answers):
+                print(f"   ✅ Will repeat answers (cycling through {len(text_answers)} lines)")
     
     for q in questions:
         if q.get('type') == 'checkbox':
@@ -580,13 +953,22 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                     if i in checkbox_selections[entry_id][opt]:
                         selected_options.append(opt)
                 
-                # ✅ Đảm bảo: selected_options LUÔN có ít nhất 1 item
-                # (Đã được xử lý ở pre-calculate phase)
-                
                 response_plan[entry_id] = {
                     'type': 'checkbox',
                     'value': selected_options,
-                    'question_text': q['text']
+                    'question_text': q.get('question', q.get('text', ''))
+                }
+                
+            elif question_type in ['short_answer', 'long_answer']:
+                # TEXT: Lấy từ pre-calculated assignments
+                text_answer = ''
+                if entry_id in text_answer_assignments:
+                    text_answer = text_answer_assignments[entry_id][i]
+                
+                response_plan[entry_id] = {
+                    'type': 'text',
+                    'value': text_answer,
+                    'question_text': q.get('question', q.get('text', ''))
                 }
                 
             else:
@@ -624,7 +1006,7 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                 response_plan[entry_id] = {
                     'type': 'multiple_choice',
                     'value': selected,
-                    'question_text': q['text']
+                    'question_text': q.get('question', q.get('text', ''))
                 }
         
         response_plans.append(response_plan)
@@ -643,6 +1025,8 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
             # Build form_data from pre-calculated plan
             for entry_id, plan_item in plan.items():
                 if plan_item['type'] == 'checkbox':
+                    form_data[entry_id] = plan_item['value']
+                elif plan_item['type'] == 'text':
                     form_data[entry_id] = plan_item['value']
                 else:
                     form_data[entry_id] = plan_item['value']
@@ -670,6 +1054,18 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                     resp = requests.post(submit_url, data=encoded_data, headers=headers, 
                                        allow_redirects=True, timeout=10)
                     
+                    # DEBUG: Log first failed response
+                    if resp.status_code != 200 and plan_index == 0:
+                        print(f"\n❌ DEBUG First response failure:")
+                        print(f"   Status: {resp.status_code}")
+                        print(f"   URL: {submit_url}")
+                        print(f"   Data sent: {encoded_data[:3]}")
+                        print(f"   Response headers: {dict(resp.headers)}")
+                        print(f"   Response URL: {resp.url}")
+                        if 'login' in resp.url.lower() or 'signin' in resp.url.lower():
+                            print(f"   ⚠️ REDIRECTED TO LOGIN - Form may require authentication")
+                        print(f"   Response text: {resp.text[:500]}")
+                    
                     if resp.status_code == 200:
                         return (True, None, plan_index)
                     elif resp.status_code >= 500 and attempt < max_retries - 1:
@@ -684,6 +1080,8 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                         continue
                     return (False, 'Timeout', plan_index)
                 except Exception as e:
+                    if plan_index == 0:
+                        print(f"\n❌ DEBUG Exception on first request: {e}")
                     return (False, str(e), plan_index)
             
             return (False, 'Unknown error', plan_index)
@@ -759,6 +1157,11 @@ def auto_submit():
     
     for q in questions:
         question_type = q.get('type', 'multiple_choice')
+        
+        # Skip validation cho text questions
+        if question_type in ['short_answer', 'long_answer']:
+            continue
+        
         options = q.get('options', [])
         option_rates = q.get('option_rates', {})
         question_text = q.get('text', 'Câu hỏi không có tên')

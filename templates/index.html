@@ -252,10 +252,26 @@
                 div.className = 'question-item';
                 
                 const isCheckbox = q.type === 'checkbox';
+                const isText = q.type === 'short_answer' || q.type === 'long_answer';
                 
                 let optionsHTML = '';
                 
-                if (isCheckbox) {
+                if (isText) {
+                    // TEXT INPUT: Textarea để nhập danh sách câu trả lời
+                    const placeholder = q.type === 'short_answer' 
+                        ? 'Nhập mỗi câu trả lời trên 1 dòng.\nVí dụ:\nCâu trả lời 1\nCâu trả lời 2\nCâu trả lời 3\n\n(Dòng trống sẽ bị bỏ qua. Nếu số responses > số dòng, sẽ lặp lại)'
+                        : 'Nhập mỗi đoạn văn trên 1 dòng riêng.\nVí dụ:\nĐây là đoạn 1...\nĐây là đoạn 2...\n\n(Dòng trống sẽ bị bỏ qua. Nếu số responses > số dòng, sẽ lặp lại)';
+                    
+                    optionsHTML = `
+                        <div class="form-group">
+                            <label>Danh sách câu trả lời (mỗi dòng 1 câu):</label>
+                            <textarea id="text-answers-${idx}" 
+                                      style="width: 100%; min-height: 150px; padding: 12px; border: 2px solid #e0e0e0; border-radius: 6px; font-family: monospace; font-size: 13px;"
+                                      placeholder="${placeholder}"></textarea>
+                            <small style="color: #666;">💡 ${q.type === 'short_answer' ? 'Short Answer' : 'Long Answer (Paragraph)'}: Nhập mỗi câu trả lời trên 1 dòng</small>
+                        </div>
+                    `;
+                } else if (isCheckbox) {
                     // CHECKBOX: Mỗi option có slider độc lập 0-100%
                     optionsHTML = `
                         <div class="form-group">
@@ -312,8 +328,8 @@
                 
                 div.innerHTML = `
                     <div class="question-header">
-                        <strong>Câu ${idx + 1}: ${q.text}</strong>
-                        <span style="font-size: 12px; color: #666;">[${isCheckbox ? 'CHECKBOX' : 'MULTIPLE CHOICE'}]</span>
+                        <strong>Câu ${idx + 1}: ${q.question || q.text}</strong>
+                        <span style="font-size: 12px; color: #666;">[${isText ? (q.type === 'short_answer' ? 'SHORT ANSWER' : 'LONG ANSWER') : (isCheckbox ? 'CHECKBOX' : 'MULTIPLE CHOICE')}]</span>
                     </div>
                     ${optionsHTML}
                     <small style="color: #999; display: block; margin-top: 10px;">Entry ID: ${q.entry_id}</small>
@@ -348,7 +364,16 @@
         function prepareSubmit() {
             // Update questions với option rates mới
             questions.forEach((q, idx) => {
-                if (q.type === 'checkbox') {
+                if (q.type === 'short_answer' || q.type === 'long_answer') {
+                    // TEXT: Lấy danh sách câu trả lời từ textarea
+                    const textarea = document.getElementById(`text-answers-${idx}`);
+                    if (textarea) {
+                        const lines = textarea.value.split('\n');
+                        q.text_answers = lines;  // Bao gồm cả dòng trống, backend sẽ lọc
+                    } else {
+                        q.text_answers = [];
+                    }
+                } else if (q.type === 'checkbox') {
                     // CHECKBOX: Lưu tỉ lệ cho từng option
                     const optionRates = {};
                     q.options.forEach((opt, optIdx) => {
