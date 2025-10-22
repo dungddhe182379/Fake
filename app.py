@@ -260,7 +260,7 @@ def import_from_url():
         questions_data = parse_google_form_edit(soup, resp.text)
         
         if not questions_data or len(questions_data) == 0:
-            print("\n⚠️ EDIT parser failed, trying VIEWFORM parser...")
+            print("\n⚠️ EDIT parser failed, trying VIEWFORM URL...")
             
             # If Edit URL failed, try fetching VIEWFORM instead
             if is_edit:
@@ -271,15 +271,29 @@ def import_from_url():
                 try:
                     resp2 = requests.get(viewform_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
                     soup2 = BeautifulSoup(resp2.text, 'html.parser')
-                    questions_data, pub_id_from_viewform = parse_google_form_viewform(soup2, resp2.text)
-                    # Update published_id if found from viewform
-                    if pub_id_from_viewform:
-                        published_id = pub_id_from_viewform
+                    
+                    # Try EDIT parser first (viewform also has FB_PUBLIC_LOAD_DATA_)
+                    print("🔍 Trying EDIT parser on VIEWFORM HTML...")
+                    questions_data = parse_google_form_edit(soup2, resp2.text)
+                    
+                    # If still failed, try data-params parser
+                    if not questions_data or len(questions_data) == 0:
+                        print("⚠️ EDIT parser on viewform failed, trying data-params parser...")
+                        questions_data, pub_id_from_viewform = parse_google_form_viewform(soup2, resp2.text)
+                        if pub_id_from_viewform:
+                            published_id = pub_id_from_viewform
                 except Exception as e:
                     print(f"❌ VIEWFORM fetch failed: {e}")
             else:
-                # Already viewform, parse it
-                questions_data, published_id = parse_google_form_viewform(soup, resp.text)
+                # Already viewform URL - try both parsers
+                print("🔍 Trying EDIT parser on VIEWFORM HTML...")
+                questions_data = parse_google_form_edit(soup, resp.text)
+                
+                if not questions_data or len(questions_data) == 0:
+                    print("⚠️ EDIT parser failed, trying data-params parser...")
+                    questions_data, pub_id_from_viewform = parse_google_form_viewform(soup, resp.text)
+                    if pub_id_from_viewform:
+                        published_id = pub_id_from_viewform
         
         if not questions_data:
             print("❌ No questions parsed!")
@@ -1322,6 +1336,14 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                 
             elif question_type == 'linear_scale':
                 # LINEAR SCALE / RATING: Tương tự multiple choice (chọn 1 giá trị)
+                
+                # Check if option_rates is empty → auto-distribute evenly
+                if not option_rates or all(option_rates.get(opt, 0) == 0 for opt in options):
+                    # Auto-distribute: Phân bổ đều
+                    if options:
+                        rate_per_option = 100 / len(options)
+                        option_rates = {opt: rate_per_option for opt in options}
+                
                 ranges = []
                 cumulative = 0
                 
@@ -1359,6 +1381,13 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                 # Ví dụ: 45%, 25%, 5%, 25% cho 100 responses
                 # → 45 responses đầu chọn opt1, 25 tiếp theo chọn opt2, ...
                 
+                # Check if option_rates is empty → auto-distribute evenly
+                if not option_rates or all(option_rates.get(opt, 0) == 0 for opt in options):
+                    # Auto-distribute: Phân bổ đều
+                    if options:
+                        rate_per_option = 100 / len(options)
+                        option_rates = {opt: rate_per_option for opt in options}
+                
                 # Build cumulative ranges
                 ranges = []
                 cumulative = 0
@@ -1380,7 +1409,7 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                     ranges[-1]['end'] += (num_responses - cumulative)
                 
                 # Determine which option this response should use
-                selected = options[0]  # Default
+                selected = options[0] if options else ''  # Default
                 for r in ranges:
                     if r['start'] <= i < r['end']:
                         selected = r['option']
