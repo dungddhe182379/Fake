@@ -469,7 +469,7 @@ def parse_google_form_edit(soup, html_text):
                             question_type = 'long_answer'
                             print(f"   Type: Long Answer")
                         
-                        elif q_type == 5:  # Linear Scale / Rating - CORRECT TYPE CODE!
+                        elif q_type == 5:  # Linear Scale - NOW WORKS LIKE CHECKBOX!
                             question_type = 'linear_scale'
                             # Linear scale structure: q_data[4][0][1] = [['1'], ['2'], ['3'], ['4'], ['5']]
                             # Each option is a nested array with the value as string
@@ -488,25 +488,17 @@ def parse_google_form_edit(soup, html_text):
                                     min_val = int(options[0]) if options else 1
                                     max_val = int(options[-1]) if options else 5
                                     
-                                    # Check for icon type or labels in q_data[4][0][3]
-                                    icon_type = 'number'  # default
+                                    # Check for labels in q_data[4][0][3]
                                     labels = ['', '']
                                     if len(q_data[4][0]) > 3 and q_data[4][0][3]:
                                         labels_data = q_data[4][0][3]
                                         print(f"   🔍 DEBUG labels_data: {labels_data}")
                                         if isinstance(labels_data, list) and len(labels_data) >= 2:
                                             labels = labels_data
-                                            # If has custom labels, likely not a rating (just number scale)
-                                            # Rating icons would be in different field - need more samples
                                     
-                                    # Check for icon in q_data[4][0][2] (the "0" field we saw)
-                                    if len(q_data[4][0]) > 2 and q_data[4][0][2]:
-                                        icon_code = q_data[4][0][2]
-                                        print(f"   🔍 DEBUG icon_code field: {icon_code}")
-                                        # This might indicate icon type (needs verification)
-                                    
-                                    print(f"   Type: Linear Scale ({min_val}-{max_val}) [Icon: {icon_type}, Labels: {labels}]")
+                                    print(f"   Type: Linear Scale ({min_val}-{max_val}) [Labels: {labels}]")
                                     print(f"   Options: {options}")
+                                    print(f"   💡 Linear scale xử lý GIỐNG CHECKBOX - có thể chọn nhiều giá trị!")
                                 else:
                                     print(f"   ⚠️ Invalid scale_options structure: {scale_options}")
                             else:
@@ -526,7 +518,7 @@ def parse_google_form_edit(soup, html_text):
                         if options:
                             question['options'] = options
                         
-                        # For linear_scale, store metadata
+                        # For linear_scale, store metadata (xử lý GIỐNG CHECKBOX)
                         if question_type == 'linear_scale' and options:
                             # Extract min/max from parsed options
                             try:
@@ -538,27 +530,14 @@ def parse_google_form_edit(soup, html_text):
                                 question['scale_min'] = 1
                                 question['scale_max'] = 5
                             
-                            # Icon type detection - need to check different fields
-                            icon_type = 'number'  # default
-                            
-                            # Check q_data[4][0][2] for icon code
-                            if len(q_data[4][0]) > 2 and q_data[4][0][2]:
-                                icon_code = q_data[4][0][2]
-                                # Map icon codes (needs verification with actual rating forms)
-                                if icon_code == 1:
-                                    icon_type = 'star'
-                                elif icon_code == 2:
-                                    icon_type = 'heart'
-                                elif icon_code == 3:
-                                    icon_type = 'thumb'
-                            
                             # Check for labels in q_data[4][0][3]
                             if len(q_data[4][0]) > 3 and q_data[4][0][3]:
                                 labels_data = q_data[4][0][3]
                                 if isinstance(labels_data, list) and len(labels_data) >= 2:
                                     question['scale_labels'] = labels_data  # [min_label, max_label]
                             
-                            question['icon_type'] = icon_type
+                            # Linear scale default behavior: MULTIPLE SELECTION (like checkbox)
+                            # Người dùng có thể chọn nhiều giá trị trên scale
                         
                         questions.append(question)
                         print(f"   ✅ Added successfully")
@@ -1165,7 +1144,7 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                 print(f"   ✅ Will repeat answers (cycling through {len(text_answers)} lines)")
     
     for q in questions:
-        if q.get('type') == 'checkbox':
+        if q.get('type') in ['checkbox', 'linear_scale']:  # LINEAR SCALE xử lý giống CHECKBOX!
             entry_id = q.get('entry_id')
             options = q.get('options', [])
             option_rates = q.get('option_rates', {})
@@ -1335,44 +1314,17 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                 }
                 
             elif question_type == 'linear_scale':
-                # LINEAR SCALE / RATING: Tương tự multiple choice (chọn 1 giá trị)
-                
-                # Check if option_rates is empty → auto-distribute evenly
-                if not option_rates or all(option_rates.get(opt, 0) == 0 for opt in options):
-                    # Auto-distribute: Phân bổ đều
-                    if options:
-                        rate_per_option = 100 / len(options)
-                        option_rates = {opt: rate_per_option for opt in options}
-                
-                ranges = []
-                cumulative = 0
+                # LINEAR SCALE: XỬ LÝ GIỐNG CHECKBOX - có thể chọn NHIỀU giá trị!
+                # Check pre-calculated selections
+                selected_values = []
                 
                 for opt in options:
-                    rate = option_rates.get(opt, 0)
-                    count = int(num_responses * rate / 100)
-                    
-                    if count > 0:
-                        ranges.append({
-                            'option': opt,
-                            'start': cumulative,
-                            'end': cumulative + count
-                        })
-                        cumulative += count
-                
-                # Handle rounding errors
-                if cumulative < num_responses and ranges:
-                    ranges[-1]['end'] += (num_responses - cumulative)
-                
-                # Determine which option this response should use
-                selected = options[0] if options else '1'  # Default
-                for r in ranges:
-                    if r['start'] <= i < r['end']:
-                        selected = r['option']
-                        break
+                    if i in checkbox_selections[entry_id][opt]:
+                        selected_values.append(opt)
                 
                 response_plan[entry_id] = {
                     'type': 'linear_scale',
-                    'value': selected,
+                    'value': selected_values,  # List of selected scale values
                     'question_text': q.get('question', q.get('text', ''))
                 }
                 
@@ -1436,7 +1388,7 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
             
             # Build form_data from pre-calculated plan
             for entry_id, plan_item in plan.items():
-                if plan_item['type'] == 'checkbox':
+                if plan_item['type'] in ['checkbox', 'linear_scale']:  # Both can be lists
                     form_data[entry_id] = plan_item['value']
                 elif plan_item['type'] == 'text':
                     form_data[entry_id] = plan_item['value']
@@ -1581,11 +1533,12 @@ def auto_submit():
         # Tính tổng tỉ lệ
         total_rate = sum(option_rates.get(opt, 0) for opt in options)
         
-        if question_type == 'checkbox':
-            # CHECKBOX: Tổng phải >= 100%
+        if question_type in ['checkbox', 'linear_scale']:
+            # CHECKBOX & LINEAR SCALE: Tổng phải >= 100% (có thể chọn nhiều)
             if total_rate < 100:
+                question_display = 'Linear Scale' if question_type == 'linear_scale' else 'Checkbox'
                 validation_errors.append(
-                    f"❌ Checkbox '{question_text}': Tổng tỉ lệ = {total_rate}% (phải >= 100%)"
+                    f"❌ {question_display} '{question_text}': Tổng tỉ lệ = {total_rate}% (phải >= 100%)"
                 )
         else:
             # RADIO (Multiple Choice): Tổng phải = 100%
