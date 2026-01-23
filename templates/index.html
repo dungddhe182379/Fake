@@ -292,11 +292,10 @@
                             <div id="average-mode-${idx}" style="display: block;">
                                 <div style="padding: 15px; background: #fff; border: 2px solid #e0e0e0; border-radius: 8px;">
                                     <label style="display: block; margin-bottom: 10px;">Trung bình mong muốn:</label>
-                                    <input type="number" id="target-average-${idx}" 
-                                           min="${q.scale_min}" max="${q.scale_max}" step="0.1" 
-                                           value="${(q.scale_min + q.scale_max) / 2}"
+                                    <input type="text" id="target-average-${idx}" 
+                                           placeholder="VD: 3.5" 
                                            style="width: 150px; padding: 8px; font-size: 16px; border: 2px solid #4285f4; border-radius: 6px;"
-                                           oninput="calculateAverageDistribution(${idx})">
+                                           oninput="handleTargetAverageInput(${idx}, ${q.scale_min}, ${q.scale_max})">
                                     <small style="display: block; margin-top: 8px; color: #666;">
                                         💡 VD: Nhập 3.5 → Máy tự tính phân bổ để average = 3.5
                                     </small>
@@ -320,8 +319,8 @@
                                                        data-option="${opt}"
                                                        oninput="updateScaleRates(${idx}, ${q.options.length})"
                                                        style="flex: 1;">
-                                                <input type="number" id="scale-input-${idx}-${optIdx}" 
-                                                       min="0" max="100" step="0.1" value="${rate}"
+                                                <input type="text" id="scale-input-${idx}-${optIdx}" 
+                                                       value="${rate}"
                                                        style="width: 70px; padding: 4px; border: 2px solid #4285f4; border-radius: 4px; text-align: right; font-weight: 600;"
                                                        oninput="updateScaleFromInput(${idx}, ${optIdx}, ${q.options.length})">
                                                 <span style="font-weight: 600; color: #4285f4;">%</span>
@@ -365,8 +364,8 @@
                                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                                             <strong>${opt}</strong>
                                             <div style="display: flex; gap: 8px; align-items: center;">
-                                                <input type="number" id="checkbox-input-${idx}-${optIdx}" 
-                                                       min="0" max="100" step="0.1" value="50"
+                                                <input type="text" id="checkbox-input-${idx}-${optIdx}" 
+                                                       value="50"
                                                        style="width: 80px; padding: 4px 8px; border: 2px solid #667eea; border-radius: 4px; text-align: right; font-weight: 600;"
                                                        oninput="updateCheckboxFromInput(${idx}, ${optIdx})">
                                                 <span style="color: #667eea; font-weight: 600;">%</span>
@@ -412,8 +411,8 @@
                                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                                                 <strong>${opt}</strong>
                                                 <div style="display: flex; gap: 8px; align-items: center;">
-                                                    <input type="number" id="option-input-${idx}-${optIdx}" 
-                                                           min="0" max="100" step="0.1" value="${defaultVal}"
+                                                    <input type="text" id="option-input-${idx}-${optIdx}" 
+                                                           value="${defaultVal}"
                                                            style="width: 80px; padding: 4px 8px; border: 2px solid #667eea; border-radius: 4px; text-align: right; font-weight: 600;"
                                                            oninput="updateMultipleChoiceFromInput(${idx}, ${optIdx}, ${q.options.length})">
                                                     <span style="color: #667eea; font-weight: 600;">%</span>
@@ -465,6 +464,30 @@
         }
         
         // LINEAR SCALE MODE 1: Calculate distribution to match target average
+        function handleTargetAverageInput(questionIdx, min, max) {
+            const input = document.getElementById(`target-average-${questionIdx}`);
+            const value = input.value.trim();
+            
+            // Allow typing freely, validate when done
+            if (value === '' || value === '.' || value === '-') {
+                return; // Let user continue typing
+            }
+            
+            const numValue = parseFloat(value);
+            if (isNaN(numValue)) {
+                input.style.borderColor = '#f44336';
+                return;
+            }
+            
+            if (numValue < min || numValue > max) {
+                input.style.borderColor = '#f44336';
+            } else {
+                input.style.borderColor = '#4285f4';
+            }
+            
+            calculateAverageDistribution(questionIdx);
+        }
+        
         function calculateAverageDistribution(questionIdx) {
             const targetAvg = parseFloat(document.getElementById(`target-average-${questionIdx}`).value);
             const q = questions[questionIdx];
@@ -558,16 +581,21 @@
         function updateScaleFromInput(questionIdx, optIdx, numOptions) {
             const input = document.getElementById(`scale-input-${questionIdx}-${optIdx}`);
             const slider = document.getElementById(`scale-slider-${questionIdx}-${optIdx}`);
-            let value = parseFloat(input.value);
-            if (isNaN(value)) value = 0;
-            if (value < 0) {
-                value = 0;
-                input.value = 0;
+            
+            const rawValue = input.value;
+            
+            // Allow empty or partial input while typing
+            if (rawValue === '' || rawValue === '.' || rawValue === '-' || rawValue.endsWith('.')) {
+                return; // Let user continue typing
             }
-            if (value > 100) {
-                value = 100;
-                input.value = 100;
+            
+            let value = parseFloat(rawValue);
+            if (isNaN(value)) {
+                return; // Invalid input, don't update
             }
+            
+            // Clamp value between 0-100
+            value = Math.max(0, Math.min(100, value));
             slider.value = value;
             updateScaleRates(questionIdx, numOptions);
         }
@@ -576,16 +604,21 @@
         function updateMultipleChoiceFromInput(questionIdx, optIdx, numOptions) {
             const input = document.getElementById(`option-input-${questionIdx}-${optIdx}`);
             const slider = document.getElementById(`option-slider-${questionIdx}-${optIdx}`);
-            let value = parseFloat(input.value);
-            if (isNaN(value)) value = 0;
-            if (value < 0) {
-                value = 0;
-                input.value = 0;
+            
+            const rawValue = input.value;
+            
+            // Allow empty or partial input while typing
+            if (rawValue === '' || rawValue === '.' || rawValue === '-' || rawValue.endsWith('.')) {
+                return; // Let user continue typing
             }
-            if (value > 100) {
-                value = 100;
-                input.value = 100;
+            
+            let value = parseFloat(rawValue);
+            if (isNaN(value)) {
+                return; // Invalid input, don't update
             }
+            
+            // Clamp value between 0-100
+            value = Math.max(0, Math.min(100, value));
             slider.value = value;
             updateMultipleChoiceRates(questionIdx, numOptions);
         }
@@ -614,16 +647,21 @@
         function updateCheckboxFromInput(questionIdx, optIdx) {
             const input = document.getElementById(`checkbox-input-${questionIdx}-${optIdx}`);
             const slider = document.getElementById(`option-slider-${questionIdx}-${optIdx}`);
-            let value = parseFloat(input.value);
-            if (isNaN(value)) value = 0;
-            if (value < 0) {
-                value = 0;
-                input.value = 0;
+            
+            const rawValue = input.value;
+            
+            // Allow empty or partial input while typing
+            if (rawValue === '' || rawValue === '.' || rawValue === '-' || rawValue.endsWith('.')) {
+                return; // Let user continue typing
             }
-            if (value > 100) {
-                value = 100;
-                input.value = 100;
+            
+            let value = parseFloat(rawValue);
+            if (isNaN(value)) {
+                return; // Invalid input, don't update
             }
+            
+            // Clamp value between 0-100
+            value = Math.max(0, Math.min(100, value));
             slider.value = value;
         }
         
