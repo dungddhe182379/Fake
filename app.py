@@ -449,17 +449,60 @@ def parse_google_form_edit(soup, html_text):
                         
                         elif q_type == 4:  # Checkbox
                             question_type = 'checkbox'
+                            has_other = False
+                            other_entry_id = None
+                            
                             # Options in q_data[4][0][1]
                             if len(q_data) > 4 and q_data[4] and len(q_data[4][0]) > 1:
                                 options_data = q_data[4][0][1]
+                                
+                                # DEBUG: Print FULL q_data[4] structure
+                                print(f"   🔍 DEBUG q_data[4]: {q_data[4][:3] if len(q_data[4]) > 3 else q_data[4]}")
+                                print(f"   🔍 DEBUG options_data: {options_data}")
+                                
                                 for opt in options_data:
                                     if isinstance(opt, list) and len(opt) > 0:
                                         option_text = opt[0]
                                         # Filter out empty strings
                                         if option_text and option_text.strip():
                                             options.append(option_text.strip())
+                                
+                                # METHOD 1: Check for "Other" in q_data[4][0][2] or higher index
+                                # Google Forms stores "hasOtherOption" as boolean in metadata
+                                if len(q_data[4][0]) > 2:
+                                    # Check multiple positions for Other flag
+                                    for idx in range(2, len(q_data[4][0])):
+                                        field = q_data[4][0][idx]
+                                        print(f"   🔍 DEBUG q_data[4][0][{idx}]: {field}")
+                                        
+                                        # Other flag is usually a boolean or number
+                                        if field is True or field == 1 or field == '1':
+                                            has_other = True
+                                            break
+                                
+                                # METHOD 2: Check last option for special marker
+                                if not has_other and options_data:
+                                    last_opt = options_data[-1]
+                                    print(f"   🔍 DEBUG last_opt: {last_opt}")
+                                    
+                                    # Check if last option is None or empty (indicates Other)
+                                    if isinstance(last_opt, list):
+                                        if len(last_opt) == 0 or last_opt[0] is None or last_opt[0] == '':
+                                            has_other = True
+                                        # Or contains __other_option__ marker
+                                        elif any(elem == '__other_option__' for elem in last_opt if elem):
+                                            has_other = True
+                                
+                                if has_other:
+                                    # Other entry ID format
+                                    main_id = entry_id.replace('entry.', '')
+                                    other_entry_id = f'entry.{main_id}.other_option_response'
+                                    print(f"   ✅ Detected 'Other' option! Entry: {other_entry_id}")
+                            
                             print(f"   Type: Checkbox")
                             print(f"   Options: {options}")
+                            if has_other:
+                                print(f"   Has 'Other': Yes (custom text field)")
                         
                         elif q_type == 0:  # Short answer (text input)
                             question_type = 'short_answer'
@@ -517,6 +560,12 @@ def parse_google_form_edit(soup, html_text):
                         
                         if options:
                             question['options'] = options
+                        
+                        # Store Other option metadata for checkbox
+                        if question_type == 'checkbox' and 'has_other' in locals() and has_other:
+                            question['has_other'] = True
+                            question['other_entry_id'] = other_entry_id
+                            question['other_text_answers'] = []  # For custom Other texts
                         
                         # For linear_scale, store metadata (xử lý GIỐNG CHECKBOX)
                         if question_type == 'linear_scale' and options:
@@ -722,6 +771,8 @@ def parse_google_form_complete(soup, html_text):
                 elif checkboxes:
                     # CHECKBOX
                     question_type = 'checkbox'
+                    has_other = False
+                    other_entry_id = None
                     print(f"Type: CHECKBOX")
                     
                     for checkbox in checkboxes:
@@ -747,13 +798,27 @@ def parse_google_form_complete(soup, html_text):
                                                 label = text
                                                 break
                         
-                        # Filter out "Other:" / "Mục khác:"
+                        # Detect "Other:" / "Mục khác:" option
                         if label and label not in options:
                             if 'other' not in label.lower() and 'khác' not in label.lower():
                                 options.append(label)
                                 print(f"   - {label}")
                             else:
-                                print(f"   - {label} (skipped)")
+                                # Found Other option - text like "Other:", "Mục khác:", "Khác"
+                                has_other = True
+                                main_id = entry_id.replace('entry.', '')
+                                other_entry_id = f'entry.{main_id}.other_option_response'
+                                print(f"   - {label} (Other option detected! Entry: {other_entry_id})")
+                
+                # FALLBACK: Search for Other text input field in container
+                # Google Forms adds a text input after checkbox group when "Other" is enabled
+                if not has_other and question_type == 'checkbox':
+                    # Look for input field with name containing "other_option_response"
+                    other_input = container.find('input', attrs={'name': re.compile(r'.*other_option_response')})
+                    if other_input:
+                        has_other = True
+                        other_entry_id = other_input.get('name')
+                        print(f"   ✅ Found Other input field: {other_entry_id}")
                 
                 elif text_inputs or text_areas:
                     # TEXT INPUT (Short answer or Long answer)
@@ -777,7 +842,7 @@ def parse_google_form_complete(soup, html_text):
                     print("⚠️  No options found")
                     continue
                 
-                questions_data.append({
+                question_obj = {
                     'id': f'q{len(questions_data) + 1}',
                     'text': question_text,
                     'entry_id': entry_id,
@@ -786,7 +851,15 @@ def parse_google_form_complete(soup, html_text):
                     'correct_answer': options[0] if options else '',
                     'accuracy_rate': 80,
                     'text_answers': []  # Cho text questions
-                })
+                }
+                
+                # Add Other option metadata for checkbox
+                if question_type == 'checkbox' and 'has_other' in locals() and has_other:
+                    question_obj['has_other'] = True
+                    question_obj['other_entry_id'] = other_entry_id
+                    question_obj['other_text_answers'] = []  # For custom Other texts
+                
+                questions_data.append(question_obj)
                 
                 if options:
                     print(f"✅ Added with {len(options)} options!")
@@ -1004,11 +1077,41 @@ def parse_google_form_viewform(soup, html_text):
                 
                 elif q_type == 4:  # Checkbox
                     question_type = 'checkbox'
+                    has_other = False
+                    other_entry_id = None
+                    
                     if len(q_data) > 4 and q_data[4] and len(q_data[4][0]) > 1:
                         options_data = q_data[4][0][1]
+                        
+                        print(f"   🔍 DEBUG q_data[4]: {q_data[4][:3] if len(q_data[4]) > 3 else q_data[4]}")
+                        print(f"   🔍 DEBUG options_data: {options_data}")
+                        
                         for opt in options_data:
                             if isinstance(opt, list) and len(opt) > 0 and opt[0]:
                                 options.append(str(opt[0]).strip())
+                        
+                        # Check for "Other" option - multiple methods
+                        if len(q_data[4][0]) > 2:
+                            for idx in range(2, len(q_data[4][0])):
+                                field = q_data[4][0][idx]
+                                print(f"   🔍 DEBUG q_data[4][0][{idx}]: {field}")
+                                if field is True or field == 1 or field == '1':
+                                    has_other = True
+                                    break
+                        
+                        if not has_other and options_data:
+                            last_opt = options_data[-1]
+                            print(f"   🔍 DEBUG last_opt: {last_opt}")
+                            if isinstance(last_opt, list):
+                                if len(last_opt) == 0 or last_opt[0] is None or last_opt[0] == '':
+                                    has_other = True
+                                elif any(elem == '__other_option__' for elem in last_opt if elem):
+                                    has_other = True
+                        
+                        if has_other:
+                            main_id = entry_id.replace('entry.', '')
+                            other_entry_id = f'entry.{main_id}.other_option_response'
+                            print(f"   ✅ Detected 'Other' option! Entry: {other_entry_id}")
                 
                 elif q_type == 5:  # Linear Scale
                     question_type = 'linear_scale'
@@ -1037,6 +1140,12 @@ def parse_google_form_viewform(soup, html_text):
                 
                 if options:
                     question['options'] = options
+                
+                # Checkbox Other metadata
+                if question_type == 'checkbox' and 'has_other' in locals() and has_other:
+                    question['has_other'] = True
+                    question['other_entry_id'] = other_entry_id
+                    question['other_text_answers'] = []
                 
                 # Linear scale metadata
                 if question_type == 'linear_scale' and options:
@@ -1126,22 +1235,65 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
             print(f"   Answers provided: {len(text_answers)} lines")
             print(f"   Responses needed: {num_responses}")
             
-            # Phân phối tuần tự, lặp lại nếu cần
+            # KHÔNG LẶP LẠI - chỉ dùng số dòng có sẵn
             assignments = []
-            for i in range(num_responses):
-                # Sử dụng modulo để lặp lại
-                ans_index = i % len(text_answers)
-                assignments.append(text_answers[ans_index])
+            actual_responses = min(num_responses, len(text_answers))
+            
+            for i in range(actual_responses):
+                assignments.append(text_answers[i])
+            
+            # Phần còn lại (nếu num_responses > text_answers) để trống
+            for i in range(actual_responses, num_responses):
+                assignments.append('')  # Empty for extra responses
             
             text_answer_assignments[entry_id] = assignments
             
             # Print sample
             print(f"   Sample assignments:")
-            for i in range(min(5, num_responses)):
+            for i in range(min(5, actual_responses)):
                 print(f"     Response #{i+1}: '{assignments[i][:50]}{'...' if len(assignments[i]) > 50 else ''}'")
             
             if num_responses > len(text_answers):
-                print(f"   ✅ Will repeat answers (cycling through {len(text_answers)} lines)")
+                print(f"   ⚠️  KHÔNG LẶP! Chỉ submit {len(text_answers)} responses (phần còn lại để trống)")
+            else:
+                print(f"   ✅ Sử dụng {actual_responses} answers (không lặp)")
+    
+    # PRE-CALCULATE OTHER OPTION TEXTS (for checkbox with Other)
+    other_text_assignments = {}
+    
+    for q in questions:
+        if q.get('type') == 'checkbox' and q.get('has_other'):
+            other_entry_id = q.get('other_entry_id')
+            other_texts = q.get('other_text_answers', [])
+            
+            # Lọc bỏ dòng trống
+            other_texts = [text.strip() for text in other_texts if text.strip()]
+            
+            if not other_texts:
+                print(f"\n⚠️  Checkbox Other '{q.get('text', '')}': No custom texts provided")
+                other_texts = []  # Không có text
+            
+            print(f"\n📝 Checkbox with Other: {q.get('text', '')}")
+            print(f"   Other texts provided: {len(other_texts)} lines")
+            
+            # KHÔNG LẶP - chỉ dùng số dòng có sẵn
+            assignments = []
+            for i in range(min(num_responses, len(other_texts))):
+                assignments.append(other_texts[i])
+            
+            # Phần còn lại để trống
+            for i in range(len(assignments), num_responses):
+                assignments.append('')
+            
+            other_text_assignments[other_entry_id] = assignments
+            
+            if len(other_texts) > 0:
+                print(f"   Sample Other texts:")
+                for i in range(min(3, len(other_texts))):
+                    print(f"     #{i+1}: '{other_texts[i][:50]}{'...' if len(other_texts[i]) > 50 else ''}'")
+                
+                if num_responses > len(other_texts):
+                    print(f"   ⚠️  KHÔNG LẶP! Chỉ {len(other_texts)} custom texts (phần còn lại bỏ qua Other)")
     
     for q in questions:
         if q.get('type') in ['checkbox', 'linear_scale']:  # LINEAR SCALE xử lý giống CHECKBOX!
@@ -1301,6 +1453,27 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                     'question_text': q.get('question', q.get('text', ''))
                 }
                 
+                # Handle Other option with custom text
+                if q.get('has_other'):
+                    other_entry_id = q.get('other_entry_id')
+                    other_text = ''
+                    
+                    if other_entry_id in other_text_assignments:
+                        other_text = other_text_assignments[other_entry_id][i]
+                    
+                    # Only add Other to response if custom text exists
+                    if other_text:
+                        # Add '__other_option__' to main checkbox selection
+                        if '__other_option__' not in response_plan[entry_id]['value']:
+                            response_plan[entry_id]['value'].append('__other_option__')
+                        
+                        # Add custom text to other_entry_id
+                        response_plan[other_entry_id] = {
+                            'type': 'other_text',
+                            'value': other_text,
+                            'question_text': f"{q.get('question', q.get('text', ''))} (Other)"
+                        }
+                
             elif question_type in ['short_answer', 'long_answer']:
                 # TEXT: Lấy từ pre-calculated assignments
                 text_answer = ''
@@ -1374,11 +1547,12 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
                 }
         
         response_plans.append(response_plan)
-    
-    # Shuffle to randomize order (nhưng giữ nguyên tỉ lệ chính xác)
-    random.shuffle(response_plans)
-    
+            # Shuffle to randomize order (nhưng giữ nguyên tỉ lệ chính xác)
+    # random.shuffle(response_plans)
+
+   
     print(f"\n🚀 Starting multi-threaded submission with {num_responses} responses...")
+
     
     # Helper function: Submit single response
     def submit_single_response(plan_index, plan, submit_url):
@@ -1390,7 +1564,7 @@ def submit_responses_background(task_id, submit_url, questions, num_responses, d
             for entry_id, plan_item in plan.items():
                 if plan_item['type'] in ['checkbox', 'linear_scale']:  # Both can be lists
                     form_data[entry_id] = plan_item['value']
-                elif plan_item['type'] == 'text':
+                elif plan_item['type'] in ['text', 'other_text']:  # Text fields
                     form_data[entry_id] = plan_item['value']
                 else:
                     form_data[entry_id] = plan_item['value']

@@ -316,17 +316,22 @@
                                             <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 10px;">
                                                 <span style="min-width: 40px; font-weight: 600; font-size: 16px;">${opt}</span>
                                                 <input type="range" class="option-slider" id="scale-slider-${idx}-${optIdx}"
-                                                       min="0" max="100" value="${rate}"
+                                                       min="0" max="100" step="0.1" value="${rate}"
                                                        data-option="${opt}"
                                                        oninput="updateScaleRates(${idx}, ${q.options.length})"
                                                        style="flex: 1;">
-                                                <span id="scale-rate-${idx}-${optIdx}" style="min-width: 50px; text-align: right; font-weight: 600; color: #4285f4;">${rate}%</span>
+                                                <input type="number" id="scale-input-${idx}-${optIdx}" 
+                                                       min="0" max="100" step="0.1" value="${rate}"
+                                                       style="width: 70px; padding: 4px; border: 2px solid #4285f4; border-radius: 4px; text-align: right; font-weight: 600;"
+                                                       oninput="updateScaleFromInput(${idx}, ${optIdx}, ${q.options.length})">
+                                                <span style="font-weight: 600; color: #4285f4;">%</span>
                                             </div>
                                         `;
                                     }).join('')}
                                     <div style="margin-top: 15px; padding: 10px; background: #e3f2fd; border-radius: 6px; text-align: center;">
                                         <strong>Tổng: <span id="scale-total-${idx}" style="font-size: 18px; color: #1976d2;">100%</span></strong>
                                     </div>
+                                    <small style="color: #666;">💡 Nhập trực tiếp hoặc dùng slider (có thập phân)</small>
                                 </div>
                             </div>
                         </div>
@@ -335,38 +340,60 @@
                 } else if (isText) {
                     // TEXT INPUT: Textarea để nhập danh sách câu trả lời
                     const placeholder = q.type === 'short_answer' 
-                        ? 'Nhập mỗi câu trả lời trên 1 dòng.\nVí dụ:\nCâu trả lời 1\nCâu trả lời 2\nCâu trả lời 3\n\n(Dòng trống sẽ bị bỏ qua. Nếu số responses > số dòng, sẽ lặp lại)'
-                        : 'Nhập mỗi đoạn văn trên 1 dòng riêng.\nVí dụ:\nĐây là đoạn 1...\nĐây là đoạn 2...\n\n(Dòng trống sẽ bị bỏ qua. Nếu số responses > số dòng, sẽ lặp lại)';
+                        ? 'Nhập mỗi câu trả lời trên 1 dòng.\nVí dụ:\nCâu trả lời 1\nCâu trả lời 2\nCâu trả lời 3\n\n⚠️ KHÔNG lặp lại! Nếu có 900 responses mà chỉ 800 dòng, chỉ submit 800 responses (phần còn lại để trống).'
+                        : 'Nhập mỗi đoạn văn trên 1 dòng riêng.\nVí dụ:\nĐây là đoạn 1...\nĐây là đoạn 2...\n\n⚠️ KHÔNG lặp lại! Nếu có 900 responses mà chỉ 800 dòng, chỉ submit 800 responses (phần còn lại để trống).';
                     
                     optionsHTML = `
                         <div class="form-group">
-                            <label>Danh sách câu trả lời (mỗi dòng 1 câu):</label>
+                            <label>Danh sách câu trả lời (mỗi dòng 1 câu) - KHÔNG lặp lại:</label>
                             <textarea id="text-answers-${idx}" 
-                                      style="width: 100%; min-height: 150px; padding: 12px; border: 2px solid #e0e0e0; border-radius: 6px; font-family: monospace; font-size: 13px;"
+                                      style="width: 100%; min-height: 150px; padding: 12px; border: 2px solid #ff9800; border-radius: 6px; font-family: monospace; font-size: 13px;"
                                       placeholder="${placeholder}"></textarea>
-                            <small style="color: #666;">💡 ${q.type === 'short_answer' ? 'Short Answer' : 'Long Answer (Paragraph)'}: Nhập mỗi câu trả lời trên 1 dòng</small>
+                            <small style="color: #f57c00;">⚠️ ${q.type === 'short_answer' ? 'Short Answer' : 'Long Answer (Paragraph)'}: KHÔNG lặp lại! Mỗi dòng = 1 response.</small>
                         </div>
                     `;
                 } else if (isCheckbox) {
                     // CHECKBOX: Mỗi option có slider độc lập 0-100%
+                    const hasOther = q.has_other || false;
+                    
                     optionsHTML = `
                         <div class="form-group">
                             <label>Tỉ lệ chọn cho từng option (độc lập):</label>
                             <div style="margin-top: 10px;">
                                 ${q.options.map((opt, optIdx) => `
                                     <div style="margin-bottom: 15px; padding: 10px; background: #f9f9f9; border-radius: 6px;">
-                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                                             <strong>${opt}</strong>
-                                            <span class="accuracy-display" id="option-rate-${idx}-${optIdx}" style="color: #667eea; font-size: 16px;">50%</span>
+                                            <div style="display: flex; gap: 8px; align-items: center;">
+                                                <input type="number" id="checkbox-input-${idx}-${optIdx}" 
+                                                       min="0" max="100" step="0.1" value="50"
+                                                       style="width: 80px; padding: 4px 8px; border: 2px solid #667eea; border-radius: 4px; text-align: right; font-weight: 600;"
+                                                       oninput="updateCheckboxFromInput(${idx}, ${optIdx})">
+                                                <span style="color: #667eea; font-weight: 600;">%</span>
+                                            </div>
                                         </div>
                                         <input type="range" class="accuracy-slider" id="option-slider-${idx}-${optIdx}" 
-                                               min="0" max="100" value="50"
-                                               oninput="document.getElementById('option-rate-${idx}-${optIdx}').textContent = this.value + '%'"
+                                               min="0" max="100" step="0.1" value="50"
+                                               oninput="updateCheckboxSlider(${idx}, ${optIdx})"
                                                data-option="${opt}">
                                     </div>
                                 `).join('')}
                             </div>
-                            <small style="color: #666;">💡 Mỗi checkbox độc lập, có thể chọn nhiều cùng lúc</small>
+                            <small style="color: #666;">💡 Mỗi checkbox độc lập, nhập trực tiếp hoặc dùng slider (có thập phân)</small>
+                            
+                            ${hasOther ? `
+                                <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border: 2px solid #ffc107; border-radius: 8px;">
+                                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                                        <span style="font-size: 20px;">📝</span>
+                                        <strong style="color: #856404;">Option "Other" được phát hiện!</strong>
+                                    </div>
+                                    <label style="display: block; margin-bottom: 8px;">Danh sách custom texts cho "Other" (mỗi dòng 1 text):</label>
+                                    <textarea id="other-texts-${idx}" 
+                                              style="width: 100%; min-height: 120px; padding: 12px; border: 2px solid #ffc107; border-radius: 6px; font-family: monospace; font-size: 13px;"
+                                              placeholder="Custom text 1\nCustom text 2\nCustom text 3\n\n⚠️ KHÔNG lặp lại! Nếu có 100 responses mà chỉ 50 dòng, chỉ 50 responses có Other."></textarea>
+                                    <small style="color: #856404;">💡 Mỗi dòng = 1 custom text cho Other option. Không lặp lại!</small>
+                                </div>
+                            ` : ''}
                         </div>
                     `;
                 } else {
@@ -382,12 +409,18 @@
                                     const defaultVal = optIdx === 0 ? perOption + remainder : perOption;
                                     return `
                                         <div style="margin-bottom: 15px; padding: 10px; background: #f9f9f9; border-radius: 6px;">
-                                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                                                 <strong>${opt}</strong>
-                                                <span class="accuracy-display" id="option-rate-${idx}-${optIdx}" style="color: #667eea; font-size: 16px;">${defaultVal}%</span>
+                                                <div style="display: flex; gap: 8px; align-items: center;">
+                                                    <input type="number" id="option-input-${idx}-${optIdx}" 
+                                                           min="0" max="100" step="0.1" value="${defaultVal}"
+                                                           style="width: 80px; padding: 4px 8px; border: 2px solid #667eea; border-radius: 4px; text-align: right; font-weight: 600;"
+                                                           oninput="updateMultipleChoiceFromInput(${idx}, ${optIdx}, ${q.options.length})">
+                                                    <span style="color: #667eea; font-weight: 600;">%</span>
+                                                </div>
                                             </div>
                                             <input type="range" class="accuracy-slider" id="option-slider-${idx}-${optIdx}" 
-                                                   min="0" max="100" value="${defaultVal}"
+                                                   min="0" max="100" step="0.1" value="${defaultVal}"
                                                    oninput="updateMultipleChoiceRates(${idx}, ${q.options.length})"
                                                    data-option="${opt}">
                                         </div>
@@ -397,7 +430,7 @@
                             <div style="margin-top: 10px; padding: 10px; background: #e3f2fd; border-radius: 6px; text-align: center;">
                                 <strong>Tổng: <span id="total-rate-${idx}" style="color: #1976d2; font-size: 18px;">100%</span></strong>
                             </div>
-                            <small style="color: #666;">💡 Điều chỉnh % để tổng = 100%</small>
+                            <small style="color: #666;">💡 Điều chỉnh % bằng slider hoặc nhập trực tiếp (có thập phân)</small>
                         </div>
                     `;
                 }
@@ -416,27 +449,6 @@
             document.getElementById('questionsSection').style.display = 'block';
         }
         
-        function updateMultipleChoiceRates(questionIdx, numOptions) {
-            // Tính tổng % của multiple choice
-            let total = 0;
-            for (let i = 0; i < numOptions; i++) {
-                const slider = document.getElementById(`option-slider-${questionIdx}-${i}`);
-                const value = parseInt(slider.value);
-                total += value;
-                document.getElementById(`option-rate-${questionIdx}-${i}`).textContent = value + '%';
-            }
-            
-            const totalDisplay = document.getElementById(`total-rate-${questionIdx}`);
-            totalDisplay.textContent = total + '%';
-            
-            // Warning nếu không = 100%
-            if (total !== 100) {
-                totalDisplay.style.color = '#f44336';
-            } else {
-                totalDisplay.style.color = '#1976d2';
-            }
-        }
-
         // LINEAR SCALE: Toggle between Average mode and Manual mode
         function toggleScaleMode(questionIdx, mode) {
             const avgDiv = document.getElementById(`average-mode-${questionIdx}`);
@@ -527,19 +539,99 @@
             let total = 0;
             for (let i = 0; i < numOptions; i++) {
                 const slider = document.getElementById(`scale-slider-${questionIdx}-${i}`);
-                const value = parseInt(slider.value);
+                const input = document.getElementById(`scale-input-${questionIdx}-${i}`);
+                const value = parseFloat(slider.value);
                 total += value;
-                document.getElementById(`scale-rate-${questionIdx}-${i}`).textContent = value + '%';
+                if (input) input.value = value;
             }
             
             const totalDisplay = document.getElementById(`scale-total-${questionIdx}`);
-            totalDisplay.textContent = total + '%';
+            totalDisplay.textContent = total.toFixed(1) + '%';
             
-            if (total !== 100) {
+            if (Math.abs(total - 100) > 0.1) {
                 totalDisplay.style.color = '#f44336';
             } else {
                 totalDisplay.style.color = '#1976d2';
             }
+        }
+        
+        function updateScaleFromInput(questionIdx, optIdx, numOptions) {
+            const input = document.getElementById(`scale-input-${questionIdx}-${optIdx}`);
+            const slider = document.getElementById(`scale-slider-${questionIdx}-${optIdx}`);
+            let value = parseFloat(input.value);
+            if (isNaN(value)) value = 0;
+            if (value < 0) {
+                value = 0;
+                input.value = 0;
+            }
+            if (value > 100) {
+                value = 100;
+                input.value = 100;
+            }
+            slider.value = value;
+            updateScaleRates(questionIdx, numOptions);
+        }
+        
+        // Multiple Choice input handlers
+        function updateMultipleChoiceFromInput(questionIdx, optIdx, numOptions) {
+            const input = document.getElementById(`option-input-${questionIdx}-${optIdx}`);
+            const slider = document.getElementById(`option-slider-${questionIdx}-${optIdx}`);
+            let value = parseFloat(input.value);
+            if (isNaN(value)) value = 0;
+            if (value < 0) {
+                value = 0;
+                input.value = 0;
+            }
+            if (value > 100) {
+                value = 100;
+                input.value = 100;
+            }
+            slider.value = value;
+            updateMultipleChoiceRates(questionIdx, numOptions);
+        }
+        
+        function updateMultipleChoiceRates(questionIdx, numOptions) {
+            let total = 0;
+            for (let i = 0; i < numOptions; i++) {
+                const slider = document.getElementById(`option-slider-${questionIdx}-${i}`);
+                const input = document.getElementById(`option-input-${questionIdx}-${i}`);
+                const value = parseFloat(slider.value);
+                total += value;
+                if (input) input.value = value;
+            }
+            
+            const totalDisplay = document.getElementById(`total-rate-${questionIdx}`);
+            totalDisplay.textContent = total.toFixed(1) + '%';
+            
+            if (Math.abs(total - 100) > 0.1) {
+                totalDisplay.style.color = '#f44336';
+            } else {
+                totalDisplay.style.color = '#1976d2';
+            }
+        }
+        
+        // Checkbox input handlers
+        function updateCheckboxFromInput(questionIdx, optIdx) {
+            const input = document.getElementById(`checkbox-input-${questionIdx}-${optIdx}`);
+            const slider = document.getElementById(`option-slider-${questionIdx}-${optIdx}`);
+            let value = parseFloat(input.value);
+            if (isNaN(value)) value = 0;
+            if (value < 0) {
+                value = 0;
+                input.value = 0;
+            }
+            if (value > 100) {
+                value = 100;
+                input.value = 100;
+            }
+            slider.value = value;
+        }
+        
+        function updateCheckboxSlider(questionIdx, optIdx) {
+            const slider = document.getElementById(`option-slider-${questionIdx}-${optIdx}`);
+            const input = document.getElementById(`checkbox-input-${questionIdx}-${optIdx}`);
+            const value = parseFloat(slider.value);
+            if (input) input.value = value;
         }
 
         function prepareSubmit() {
@@ -581,6 +673,17 @@
                         optionRates[opt] = parseFloat(slider.value);
                     });
                     q.option_rates = optionRates;
+                    
+                    // If has Other option, get custom texts
+                    if (q.has_other) {
+                        const otherTextarea = document.getElementById(`other-texts-${idx}`);
+                        if (otherTextarea) {
+                            const lines = otherTextarea.value.split('\n');
+                            q.other_text_answers = lines;  // Backend sẽ lọc dòng trống
+                        } else {
+                            q.other_text_answers = [];
+                        }
+                    }
                 } else {
                     // MULTIPLE CHOICE: Lưu phân bổ %
                     const optionRates = {};
